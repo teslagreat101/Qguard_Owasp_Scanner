@@ -1,5 +1,5 @@
 """
-Quantum Protocol v5.0 — Secrets & Credentials Detection Engine
+Quantara Security v5.0 — Secrets & Credentials Detection Engine
 Enterprise Intelligence Platform
 
 Detection layers:
@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Generator, Iterable, List, Optional, Set, Tuple
 
-from quantum_protocol.models.enums import AlgoFamily, RiskLevel
+from .enums import AlgoFamily, RiskLevel
 
 logger = logging.getLogger(__name__)
 

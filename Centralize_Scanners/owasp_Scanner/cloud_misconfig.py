@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — Cloud & Infrastructure Security Scanner
+Quantara Security v4.0 — Cloud & Infrastructure Security Scanner
 
 Detects:
   - AWS misconfigurations (S3 public access, IAM wildcards, open security groups)

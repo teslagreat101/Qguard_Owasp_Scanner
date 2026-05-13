@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — A08: Software & Data Integrity Failures Scanner
+Quantara Security v4.0 — A08: Software & Data Integrity Failures Scanner
 
 Detects:
   - Unsafe deserialization (pickle, yaml.load, ObjectInputStream, unserialize, Marshal.load)

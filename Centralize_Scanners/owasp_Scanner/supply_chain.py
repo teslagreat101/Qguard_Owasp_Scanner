@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — A03: Software Supply Chain Failures Scanner
+Quantara Security v4.0 — A03: Software Supply Chain Failures Scanner
 
 Detects:
   - Unpinned / wildcard dependencies

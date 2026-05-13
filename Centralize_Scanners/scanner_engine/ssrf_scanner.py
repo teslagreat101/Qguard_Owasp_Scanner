@@ -231,15 +231,18 @@ def scan_ssrf_file(
 
     for compiled_re, rule in COMPILED_SSRF_RULES:
         # Language filtering
+        lang_hint = rule.language_hint
+        _hint = lang_hint.lower() if lang_hint else ""
         lang_match = (
-            rule.language_hint is None
-            or rule.language_hint.lower() == language.lower()
-            or rule.language_hint.lower() in language.lower()
+            lang_hint is None
+            or _hint == language.lower()
+            or _hint in language.lower()
         )
 
         for match in compiled_re.finditer(content):
             line_num = content.count("\n", 0, match.start()) + 1
-            matched_text = match.group(0).strip()[:250]
+            _mt = str(match.group(0)).strip()
+            matched_text = _mt[:250] if len(_mt) > 250 else _mt
 
             finding_key = f"{rule.id}:{line_num}"
             if finding_key in seen:
@@ -257,11 +260,11 @@ def scan_ssrf_file(
                 severity=rule.severity,
                 title=rule.title,
                 description=rule.description,
-                matched_content=matched_text,
+                matched_content=str(matched_text),
                 category="A10:2025-SSRF",
                 cwe=rule.cwe,
                 remediation=rule.remediation,
-                confidence=round(conf, 2),
+                confidence=float(round(float(conf or 0.5), 2)),
                 ssrf_type=rule.ssrf_type,
                 language=language,
                 tags=list(rule.tags),
@@ -277,10 +280,10 @@ def scan_ssrf_directory(
     """Walk a directory tree and scan for SSRF vulnerabilities."""
     all_findings: list[SSRFFinding] = []
     root_path = Path(root)
-    scanned = 0
+    scanned: int = 0
 
     for fpath in root_path.rglob("*"):
-        if scanned >= max_files:
+        if int(scanned) >= int(max_files):
             break
         if fpath.is_dir():
             continue
@@ -295,7 +298,7 @@ def scan_ssrf_directory(
                 continue
             findings = scan_ssrf_file(content, str(fpath), str(root_path))
             all_findings.extend(findings)
-            scanned += 1
+            scanned = int(scanned) + 1
         except (OSError, PermissionError):
             continue
 
@@ -312,25 +315,53 @@ import logging as _ssrf_logging
 _ssrf_logger = _ssrf_logging.getLogger("enterprise.scanner.ssrf")
 
 
-def normalize_ssrf_finding(f: SSRFFinding, scan_id: str = "") -> dict:
+# NEO Intelligence Layer imports
+try:
+    import sys
+    import os
+    _ENGINE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scanner_engine"))
+    if _ENGINE_PATH not in sys.path:
+        sys.path.insert(0, _ENGINE_PATH)
+    from neo_intelligence import get_payload_generator, get_spec_abuse_kb  # type: ignore
+    NEO_INTEL_AVAILABLE = True
+except ImportError:
+    NEO_INTEL_AVAILABLE = False
+
+
+def normalize_ssrf_finding(finding: SSRFFinding, scan_id: str = "") -> dict:
     """Convert SSRFFinding to NormalizedFinding-compatible dict."""
+    
+    # Enrich with Spec Abuse KB if available
+    spec_abuse_intel = ""
+    if NEO_INTEL_AVAILABLE and finding.language:
+        kb = get_spec_abuse_kb()
+        if kb:
+            vectors = kb.get_abuse_vectors(finding.language)
+            if vectors:
+                relevant = [v for v in vectors if "ssrf" in str(v.get("description", "")).lower() or "proxy" in str(v.get("description", "")).lower()]
+                relevant_list = list(relevant)
+                relevant_vectors = relevant_list[:2]
+                vector_str = "\n".join([f"• {str(v.get('description', ''))}" for v in relevant_vectors])
+                spec_abuse_intel = f"\n\n[NEO SPEC ABUSE INTELLIGENCE]\nKnown {finding.language} SSRF vectors:\n{vector_str}"
+
     return {
-        "id": f.id,
+        "id": finding.id,
         "scanner_source": "ssrf",
         "module": "ssrf",
-        "category": f.category,
-        "severity": f.severity.lower(),
-        "title": f.title,
-        "description": f.description,
-        "matched_content": f.matched_content,
-        "cwe": f.cwe,
+        "category": finding.category,
+        "severity": finding.severity.lower(),
+        "title": finding.title,
+        "description": finding.description + spec_abuse_intel,
+        "matched_content": finding.matched_content,
+        "cwe": finding.cwe,
         "owasp": "A10:2025",
-        "file": f.file,
-        "line_number": f.line_number,
-        "confidence": f.confidence,
-        "remediation": f.remediation,
-        "tags": list(f.tags) + ["ssrf", "server-side-request-forgery"],
+        "file": finding.file,
+        "line_number": finding.line_number,
+        "confidence": finding.confidence,
+        "remediation": getattr(finding, "remediation", "See OWASP SSRF prevention guide."),
+        "tags": list(getattr(finding, "tags", [])) + ["ssrf", "server-side-request-forgery"],
         "scan_id": scan_id,
+        "language": getattr(finding, "language", "unknown"),
     }
 
 
@@ -349,7 +380,7 @@ def scan_ssrf_file_telemetry(
         "scan_id": scan_id,
         "file": filepath,
         "findings_count": len(findings),
-        "duration_ms": round(elapsed_ms, 2),
+        "duration_ms": float(round(float(elapsed_ms or 0.0), 2)),
         "timestamp": _ssrf_time.time(),
     }
 
@@ -389,7 +420,7 @@ def scan_ssrf_directory_enterprise(
                         on_finding(normalize_ssrf_finding(f, scan_id))
                     except Exception:
                         pass
-            files_scanned += 1
+            files_scanned = int(files_scanned) + 1
         except (OSError, PermissionError):
             continue
 
@@ -399,7 +430,7 @@ def scan_ssrf_directory_enterprise(
         "root": root,
         "files_scanned": files_scanned,
         "findings_count": len(findings),
-        "duration_ms": round((_ssrf_time.time() - start) * 1000, 2),
+        "duration_ms": float(round(float(_ssrf_time.time() - start) * 1000.0, 2)),
         "severity_breakdown": {
             sev: sum(1 for f in findings if f.severity.lower() == sev)
             for sev in ["critical", "high", "medium", "low", "info"]
@@ -446,7 +477,7 @@ async def probe_ssrf_behavioral(
             "baseline_ms": baseline_ms,
             "test_url": test_url,
             "parameter": parameter,
-            "evidence": body[:500] if metadata_leaked else "",
+            "evidence": str(body)[0:500] if metadata_leaked else "",
         }
     except Exception as exc:
         return {

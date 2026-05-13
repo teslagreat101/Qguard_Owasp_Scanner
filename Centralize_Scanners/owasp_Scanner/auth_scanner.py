@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — A07: Identification & Authentication Failures Scanner
+Quantara Security v4.0 — A07: Identification & Authentication Failures Scanner
 
 Detects:
   - Weak password policies (min length, no complexity, weak hashing)
@@ -13,8 +13,15 @@ Detects:
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 from pathlib import Path
+import time as _auth_time
+
+try:
+    from Centralize_Scanners.scanner_engine.neo_intelligence import get_payload_generator, get_spec_abuse_kb
+except ImportError:
+    get_payload_generator = lambda: None
+    get_spec_abuse_kb = lambda: None
 
 @dataclass
 class AuthFinding:
@@ -177,25 +184,90 @@ def scan_auth_file(content: str, filepath: str, base_path: str = "") -> list[Aut
             findings.append(AuthFinding(
                 id=f"AU-{relative}:{line_num}:{rule.id}", file=relative, line_number=line_num,
                 severity=rule.severity, title=rule.title, description=rule.description,
-                matched_content=match.group(0).strip()[:200], category="A07:2025-Auth Failures",
+                matched_content=str(match.group(0)).strip()[0:200], category="A07:2025-Auth Failures",
                 subcategory=rule.subcategory, cwe=rule.cwe, remediation=rule.remediation,
-                confidence=rule.confidence, tags=list(rule.tags),
+                confidence=float(rule.confidence), tags=list(rule.tags),
             ))
     return findings
 
-def scan_auth_directory(root: str, max_files: int = 50_000) -> list[AuthFinding]:
+def normalize_auth_finding(finding: AuthFinding, scan_id: str = "manual") -> AuthFinding:
+    """Enrich Auth finding with NEO Intelligence."""
+    kb = get_spec_abuse_kb()
+    if kb and hasattr(finding, 'subcategory'):
+        # Map subcategory to language/tech for KB lookup
+        ext = Path(finding.file).suffix.lower()
+        lang_map = {
+            ".py": "python", ".js": "javascript", ".ts": "typescript",
+            ".java": "java", ".go": "go", ".rb": "ruby", ".php": "php"
+        }
+        lang = lang_map.get(ext, "generic")
+        
+        vectors = kb.get_abuse_vectors(lang)
+        if vectors:
+            relevant = [v for v in vectors if finding.subcategory in str(v.get("description", "")).lower() or "auth" in str(v.get("description", "")).lower()]
+            relevant_list = list(relevant) if relevant else list(vectors)
+            relevant_vectors = relevant_list[0:2] # type: ignore
+            
+            vector_str = "\n".join([f"• {str(v.get('description', ''))}" for v in relevant_vectors])
+            
+            spec_abuse_intel = f"\n\n[NEO SPEC ABUSE INTELLIGENCE]\nKnown vectors for {finding.subcategory}:\n{vector_str}"
+            finding.description = f"{finding.description}{spec_abuse_intel}"
+            
+    return finding
+
+def scan_auth_directory(root: str, scan_id: str = "manual", max_files: int = 50_000,
+                       on_finding: Optional[Callable] = None) -> list[AuthFinding]:
+    """Walk a directory tree and scan for authentication vulnerabilities."""
     all_findings: list[AuthFinding] = []
     root_path = Path(root)
-    scanned = 0
+    scanned: int = 0
+    start = _auth_time.time()
+
     for fpath in root_path.rglob("*"):
-        if scanned >= max_files: break
-        if fpath.is_dir(): continue
-        if any(s in fpath.parts for s in SKIP_DIRS): continue
-        if fpath.suffix.lower() not in SCAN_EXTENSIONS: continue
+        _sc = int(scanned)
+        if _sc >= int(max_files):
+            break
+        if fpath.is_dir():
+            continue
+        if any(s in fpath.parts for s in SKIP_DIRS):
+            continue
+        if fpath.suffix.lower() not in SCAN_EXTENSIONS:
+            continue
+        
         try:
             content = fpath.read_text(encoding="utf-8", errors="ignore")
-            if len(content) > 5_000_000: continue
-            all_findings.extend(scan_auth_file(content, str(fpath), str(root_path)))
-            scanned += 1
-        except (OSError, PermissionError): continue
+            if len(content) > 5_000_000:
+                continue
+            
+            findings = scan_auth_file(content, str(fpath), str(root_path))
+            for f in findings:
+                normalized = normalize_auth_finding(f, scan_id)
+                all_findings.append(normalized)
+                if on_finding:
+                    try:
+                        on_finding(normalized)
+                    except Exception:
+                        pass
+            
+            scanned = int(scanned) + 1 # type: ignore
+        except (OSError, PermissionError):
+            continue
+            
     return all_findings
+
+def get_auth_scan_summary(findings: list[AuthFinding], root: str, files_scanned: int,
+                          start_time: float, scan_id: str = "manual") -> dict:
+    """Generate a summary of the authentication scan results."""
+    elapsed_ms = (_auth_time.time() - start_time) * 1000
+    return {
+        "scan_id": scan_id,
+        "root": root,
+        "files_scanned": files_scanned,
+        "findings_count": len(findings),
+        "duration_ms": float(f"{elapsed_ms:.2f}"),
+        "severity_breakdown": {
+            sev: sum(1 for f in findings if f.severity.lower() == sev)
+            for sev in ["critical", "high", "medium", "low", "info"]
+        },
+        "timestamp": _auth_time.time()
+    }

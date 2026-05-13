@@ -184,8 +184,9 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8082:8080"
+    user: "root"
     volumes:
-      - hetty-data:/root/.hetty
+      - ./.hetty_data:/root/.hetty
     networks:
       - scanner-net
 
@@ -197,12 +198,14 @@ services:
     image: mitmproxy/mitmproxy:latest
     container_name: owasp-scanner-mitmweb
     restart: unless-stopped
-    command: mitmweb --web-host 0.0.0.0 --web-port 8081 --listen-host 0.0.0.0 -p 8080 --set web_open_browser=false --set confdir=/root/.mitmproxy
+    command: >
+      sh -c "mkdir -p /root/.mitmproxy && chmod -R 777 /root/.mitmproxy && mitmweb --web-host 0.0.0.0 --web-port 8081 --listen-host 0.0.0.0 -p 8080 --set web_open_browser=false --set confdir=/root/.mitmproxy --set web_allow_hosts=*"
     ports:
       - "127.0.0.1:8083:8081"
       - "127.0.0.1:8084:8080"
+    user: "root"
     volumes:
-      - mitmproxy-data:/root/.mitmproxy
+      - ./.mitmproxy_data:/root/.mitmproxy
     networks:
       - scanner-net
 
@@ -215,7 +218,8 @@ services:
     container_name: owasp-poc-proxy
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8085:80"
+      - "0.0.0.0:8085:80"
+
     volumes:
       - ./nginx/poc-proxy.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

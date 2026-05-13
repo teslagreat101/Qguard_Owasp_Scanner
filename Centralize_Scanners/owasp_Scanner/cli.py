@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Quantum Protocol v3.5 — CLI Entry Point
+Quantara Security v4.0 — CLI Entry Point
 
 Usage:
-  quantum-scanner scan <path> [options]
-  quantum-scanner repo <url> [options]
-  quantum-scanner archive <file> [options]
+  quantara-scanner scan <path> [options]
+  quantara-scanner repo <url> [options]
+  quantara-scanner archive <file> [options]
 
 Scan Modes:
-  --mode full        All crypto + all secrets (default)
+  --mode full        All security checks + all secrets (default)
   --mode secrets     Secrets & credentials only
-  --mode quantum     Only quantum-vulnerable crypto
   --mode quick       High-confidence patterns only
   --mode compliance  Map to compliance frameworks
 """
@@ -18,27 +17,26 @@ Scan Modes:
 from __future__ import annotations
 import argparse, json, logging, sys
 from pathlib import Path
-from quantum_protocol import __version__
-from quantum_protocol.models.enums import RiskLevel, ScanMode
-from quantum_protocol.core.engine import (
+from . import __version__
+from .enums import RiskLevel, ScanMode
+from .engine import (
     scan_local_directory, scan_repository, scan_uploaded_archive,
 )
-from quantum_protocol.reporters.formatters import (
+from .formatters import (
     export_json, export_sarif, export_csv, export_summary, export_html_dashboard,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="quantum-scanner",
-        description=f"Quantum Protocol v{__version__} — Crypto + Secrets Security Scanner",
+        prog="quantara-scanner",
+        description=f"Quantara Security v{__version__} — Web & Code Security Scanner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  quantum-scanner scan ./my-project --format html --output report.html\n"
-            "  quantum-scanner scan . --mode secrets           # secrets-only scan\n"
-            "  quantum-scanner repo https://github.com/org/repo --token $GH_TOKEN\n"
-            "  quantum-scanner scan . --mode quantum --min-conf 0.8\n"
+            "  quantara-scanner scan ./my-project --format html --output report.html\n"
+            "  quantara-scanner scan . --mode secrets           # secrets-only scan\n"
+            "  quantara-scanner repo https://github.com/org/repo --token $GH_TOKEN\n"
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -63,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_common_args(p):
     p.add_argument("--format", "-f", choices=["json","sarif","csv","html","summary"], default="summary")
     p.add_argument("--output", "-o", help="Output file path")
-    p.add_argument("--mode", "-m", choices=["full","quick","quantum","secrets","compliance"], default="full")
+    p.add_argument("--mode", "-m", choices=["full","quick","secrets","compliance"], default="full")
     p.add_argument("--min-conf", type=float, default=0.0)
     p.add_argument("--risk-level", choices=["critical","high","medium","low","info"], default="info")
     p.add_argument("--secrets-only", action="store_true", help="Alias for --mode secrets")

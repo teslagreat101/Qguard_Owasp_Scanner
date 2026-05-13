@@ -1,11 +1,11 @@
 """
-Quantum Protocol v3.5 — Enumerations, Constants, and Compliance Mappings
+Quantara Security v5.0 — Enumerations, Constants, and Compliance Mappings
 
 Covers:
-  - NIST PQC (FIPS 203/204/205)
-  - CNSA 2.0 timeline
-  - ETSI QSC / PCI-DSS 4.0 / FIPS 140-3
+  - OWASP Top 10:2025
+  - PCI-DSS 4.0 / FIPS 140-3
   - Secrets & credential exposure categories
+  - HIPAA / GDPR / SOC2
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ class RiskLevel(str, Enum):
 
     @property
     def numeric(self) -> float:
-        return {"Critical": 9.5, "High": 7.5, "Medium": 5.0,
-                "Low": 2.5, "Info": 0.5}[self.value]
+        _map = {"Critical": 9.5, "High": 7.5, "Medium": 5.0, "Low": 2.5, "Info": 0.5}
+        return _map.get(str(self.value), 0.5)
 
     @property
     def sarif_level(self) -> str:
-        return {"Critical": "error", "High": "error", "Medium": "warning",
-                "Low": "note", "Info": "none"}[self.value]
+        _map = {"Critical": "error", "High": "error", "Medium": "warning", "Low": "note", "Info": "none"}
+        return _map.get(str(self.value), "none")
 
 
 class ConfidenceLevel(str, Enum):
@@ -48,7 +48,7 @@ class ConfidenceLevel(str, Enum):
 # ────────────────────────────────────────────────────────────────────────────
 
 class AlgoFamily(str, Enum):
-    # ── Asymmetric — quantum-broken ──────────────────────────────────
+    # ── Asymmetric ──────────────────────────────────────────────────
     RSA        = "RSA"
     RSA_OAEP   = "RSA-OAEP"
     ECC        = "ECC"
@@ -88,12 +88,6 @@ class AlgoFamily(str, Enum):
     CERT_ISSUE     = "Certificate-Issue"
     PROTOCOL       = "Protocol-Issue"
     AGILITY        = "Crypto-Agility"
-
-    # ── Post-quantum (positive detection) ────────────────────────────
-    ML_KEM     = "ML-KEM"
-    ML_DSA     = "ML-DSA"
-    SLH_DSA    = "SLH-DSA"
-    XMSS       = "XMSS"
 
     # ══════════════════════════════════════════════════════════════════
     # ═══  SECRETS & CREDENTIALS ENGINE FAMILIES  ═════════════════════
@@ -197,20 +191,13 @@ class AlgoFamily(str, Enum):
     SECRET_AUTH0         = "Auth0-Credential"
 
     @property
-    def is_quantum_broken(self) -> bool:
-        return self in _QUANTUM_BROKEN_SET
-
-    @property
-    def is_classically_broken(self) -> bool:
-        return self in _CLASSICALLY_BROKEN_SET
-
-    @property
-    def is_pqc_safe(self) -> bool:
-        return self in _PQC_SAFE_SET
+    def is_vulnerable(self) -> bool:
+        return self in _VULNERABLE_ALGO_SET
 
     @property
     def is_secret(self) -> bool:
-        return self.value.startswith(("AWS-", "GCP-", "Azure-", "DigitalOcean-",
+        v = str(self.value)
+        return v.startswith(("AWS-", "GCP-", "Azure-", "DigitalOcean-",
             "Alibaba-", "IBM-", "Oracle-", "Heroku-", "Cloudflare-",
             "GitHub-", "GitLab-", "Bitbucket-", "CircleCI-", "TravisCI-",
             "Jenkins-", "NPM-", "PyPI-", "Docker-", "Terraform-",
@@ -234,21 +221,13 @@ class AlgoFamily(str, Enum):
         return self in _SYMMETRIC_SET
 
 
-_QUANTUM_BROKEN_SET = {
-    AlgoFamily.RSA, AlgoFamily.RSA_OAEP, AlgoFamily.ECC, AlgoFamily.ECDSA,
-    AlgoFamily.ECDH, AlgoFamily.DSA, AlgoFamily.DH, AlgoFamily.ELGAMAL,
-    AlgoFamily.X25519, AlgoFamily.ED25519, AlgoFamily.ED448, AlgoFamily.X448,
-}
-
-_CLASSICALLY_BROKEN_SET = {
+_VULNERABLE_ALGO_SET = {
     AlgoFamily.MD4, AlgoFamily.MD5, AlgoFamily.SHA1, AlgoFamily.DES,
     AlgoFamily.RC4, AlgoFamily.RC2, AlgoFamily.BLOWFISH, AlgoFamily.IDEA,
     AlgoFamily.RIPEMD160, AlgoFamily.HMAC_MD5, AlgoFamily.HMAC_SHA1,
     AlgoFamily.AES_ECB, AlgoFamily.TRIPLE_DES, AlgoFamily.WEAK_RANDOM,
-}
-
-_PQC_SAFE_SET = {
-    AlgoFamily.ML_KEM, AlgoFamily.ML_DSA, AlgoFamily.SLH_DSA, AlgoFamily.XMSS,
+    AlgoFamily.RSA, AlgoFamily.ECC, AlgoFamily.DSA, AlgoFamily.DH,
+    AlgoFamily.ED25519, AlgoFamily.ED448, AlgoFamily.X25519, AlgoFamily.X448,
 }
 
 _SYMMETRIC_SET = {
@@ -262,11 +241,8 @@ _SYMMETRIC_SET = {
 # ────────────────────────────────────────────────────────────────────────────
 
 class ComplianceFramework(str, Enum):
-    NIST_PQC       = "NIST-PQC"
-    CNSA_2_0       = "CNSA-2.0"
     FIPS_140_3     = "FIPS-140-3"
     PCI_DSS_4      = "PCI-DSS-4.0"
-    ETSI_QSC       = "ETSI-QSC"
     HIPAA          = "HIPAA"
     SOC2           = "SOC-2"
     NIST_800_131A  = "NIST-800-131A"
@@ -278,7 +254,6 @@ class ComplianceFramework(str, Enum):
 class ScanMode(str, Enum):
     FULL       = "full"
     QUICK      = "quick"
-    QUANTUM    = "quantum"
     SECRETS    = "secrets"       # secrets-only mode
     COMPLIANCE = "compliance"
     DIFF       = "diff"
@@ -297,81 +272,6 @@ class OutputFormat(str, Enum):
     HTML    = "html"
     SUMMARY = "summary"
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# PQC Replacement Map
-# ────────────────────────────────────────────────────────────────────────────
-
-PQC_REPLACEMENTS: dict[str, dict] = {
-    AlgoFamily.RSA: {
-        "kem": "ML-KEM-768 / ML-KEM-1024 (FIPS 203)",
-        "sign": "ML-DSA-65 / ML-DSA-87 (FIPS 204)",
-        "hash_sign": "SLH-DSA-SHA2-128s (FIPS 205)",
-        "hybrid_kem": "X25519+ML-KEM-768 (hybrid, RFC 9180 HPKE)",
-        "library": "liboqs >= 0.11 | cryptography >= 44.0 | wolfSSL 5.7+",
-        "notes": "RSA is fully broken by Shor's algorithm regardless of key size.",
-    },
-    AlgoFamily.RSA_OAEP: {
-        "kem": "ML-KEM-768 (FIPS 203)",
-        "notes": "RSA-OAEP padding is better but RSA itself is quantum-broken.",
-    },
-    AlgoFamily.ECC: {
-        "kem": "ML-KEM-768 (FIPS 203)",
-        "sign": "ML-DSA-65 (FIPS 204) or SLH-DSA-SHA2-128s (FIPS 205)",
-        "hybrid_kem": "X25519+ML-KEM-768",
-        "library": "liboqs >= 0.11 | BoringSSL PQ | OpenSSL 3.5+",
-        "notes": "All ECC curves are vulnerable to Shor's algorithm.",
-    },
-    AlgoFamily.ECDSA: {
-        "sign": "ML-DSA-65 (FIPS 204)",
-        "notes": "ECDSA on any curve is quantum-broken.",
-    },
-    AlgoFamily.ECDH: {
-        "kem": "ML-KEM-768 (FIPS 203)",
-        "hybrid_kem": "X25519+ML-KEM-768 (already in Chrome 131+)",
-        "notes": "ECDH key exchange is quantum-broken.",
-    },
-    AlgoFamily.DSA: {
-        "sign": "ML-DSA-65 (FIPS 204)",
-        "notes": "DSA is deprecated by NIST AND quantum-broken.",
-    },
-    AlgoFamily.DH: {
-        "kem": "ML-KEM-768 / ML-KEM-1024 (FIPS 203)",
-        "notes": "DH is broken by Shor. Use ML-KEM hybrid for TLS/IPsec.",
-    },
-    AlgoFamily.X25519: {
-        "kem": "ML-KEM-768 (FIPS 203)",
-        "hybrid_kem": "X25519+ML-KEM-768",
-        "notes": "X25519 is quantum-broken.",
-    },
-    AlgoFamily.ED25519: {
-        "sign": "ML-DSA-65 (FIPS 204)",
-        "notes": "Ed25519 is quantum-broken despite being modern.",
-    },
-    AlgoFamily.ED448: {"sign": "ML-DSA-87 (FIPS 204)", "notes": "Ed448 is quantum-broken."},
-    AlgoFamily.X448:  {"kem": "ML-KEM-1024 (FIPS 203)", "notes": "X448 is quantum-broken."},
-    AlgoFamily.MD5: {
-        "replacement": "SHA-256 minimum; SHA3-256 for new designs",
-        "notes": "MD5 is collision-broken.",
-    },
-    AlgoFamily.SHA1: {
-        "replacement": "SHA-256 or SHA3-256",
-        "notes": "SHA-1 is collision-broken (SHAttered).",
-    },
-    AlgoFamily.DES: {"replacement": "AES-256-GCM", "notes": "DES is classically broken."},
-    AlgoFamily.TRIPLE_DES: {"replacement": "AES-256-GCM", "notes": "3DES deprecated by NIST."},
-    AlgoFamily.RC4: {"replacement": "ChaCha20-Poly1305 or AES-256-GCM", "notes": "RC4 is broken."},
-    AlgoFamily.AES_ECB: {"replacement": "AES-256-GCM (AEAD)", "notes": "ECB leaks patterns."},
-    AlgoFamily.AES_128: {"replacement": "AES-256-GCM", "notes": "Only 64-bit quantum security."},
-    AlgoFamily.HARDCODED_KEY: {
-        "replacement": "AWS KMS / HashiCorp Vault / Azure Key Vault / GCP KMS",
-        "notes": "Hardcoded keys are exposed in source control and binaries.",
-    },
-    AlgoFamily.WEAK_RANDOM: {
-        "replacement": "os.urandom() / secrets (Python), crypto.randomBytes (Node), SecureRandom (Java)",
-        "notes": "Non-cryptographic RNGs must never be used for keys/tokens.",
-    },
-}
 
 # Secrets remediation map
 SECRETS_REMEDIATION: dict[str, dict] = {
@@ -442,12 +342,12 @@ MAX_FILE_SIZE_BYTES: int = 10 * 1024 * 1024
 # ────────────────────────────────────────────────────────────────────────────
 
 COMPLIANCE_VIOLATIONS: dict[AlgoFamily, list[ComplianceFramework]] = {
-    AlgoFamily.RSA:        [ComplianceFramework.CNSA_2_0, ComplianceFramework.NIST_PQC],
-    AlgoFamily.ECC:        [ComplianceFramework.CNSA_2_0, ComplianceFramework.NIST_PQC],
-    AlgoFamily.ECDSA:      [ComplianceFramework.CNSA_2_0, ComplianceFramework.NIST_PQC],
-    AlgoFamily.ECDH:       [ComplianceFramework.CNSA_2_0, ComplianceFramework.NIST_PQC],
-    AlgoFamily.DSA:        [ComplianceFramework.CNSA_2_0, ComplianceFramework.NIST_PQC, ComplianceFramework.NIST_800_131A],
-    AlgoFamily.DH:         [ComplianceFramework.CNSA_2_0, ComplianceFramework.NIST_PQC],
+    AlgoFamily.RSA:        [ComplianceFramework.OWASP_TOP10],
+    AlgoFamily.ECC:        [ComplianceFramework.OWASP_TOP10],
+    AlgoFamily.ECDSA:      [ComplianceFramework.OWASP_TOP10],
+    AlgoFamily.ECDH:       [ComplianceFramework.OWASP_TOP10],
+    AlgoFamily.DSA:        [ComplianceFramework.OWASP_TOP10, ComplianceFramework.NIST_800_131A],
+    AlgoFamily.DH:         [ComplianceFramework.OWASP_TOP10],
     AlgoFamily.MD5:        [ComplianceFramework.FIPS_140_3, ComplianceFramework.PCI_DSS_4, ComplianceFramework.NIST_800_131A],
     AlgoFamily.SHA1:       [ComplianceFramework.FIPS_140_3, ComplianceFramework.NIST_800_131A],
     AlgoFamily.DES:        [ComplianceFramework.FIPS_140_3, ComplianceFramework.PCI_DSS_4, ComplianceFramework.NIST_800_131A],
@@ -472,3 +372,4 @@ COMPLIANCE_VIOLATIONS: dict[AlgoFamily, list[ComplianceFramework]] = {
     AlgoFamily.SECRET_GENERIC_API:      [ComplianceFramework.OWASP_TOP10, ComplianceFramework.SOC2],
     AlgoFamily.SECRET_GENERIC_SECRET:   [ComplianceFramework.OWASP_TOP10, ComplianceFramework.SOC2],
 }
+

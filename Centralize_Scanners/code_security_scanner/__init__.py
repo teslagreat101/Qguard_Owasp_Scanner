@@ -15,7 +15,7 @@ __version__ = "1.0.0"
 __author__ = "Quantum Protocol Team"
 
 # Lazy imports to avoid circular dependencies — import from submodules directly
-from quantum_protocol.core.code_security_scanner.models import (
+from .models import (
     SecurityScanResult,
     ValidatedFinding,
     PatchSuggestion,
@@ -26,13 +26,13 @@ from quantum_protocol.core.code_security_scanner.models import (
     TaintSink,
     TaintPropagator,
 )
-from quantum_protocol.core.code_security_scanner.data_flow import DataFlowGraph
-from quantum_protocol.core.code_security_scanner.agents import (
+from .data_flow import DataFlowGraph
+from .agents import (
     DiscoveryAgent,
     VerificationAgent,
     AssessmentAgent,
 )
-from quantum_protocol.core.code_security_scanner.scanner import CodeSecurityScanner
+from .scanner import CodeSecurityScanner
 
 __all__ = [
     "CodeSecurityScanner",

@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — Bug Bounty Recon / Endpoint Extraction Engine
+Quantara Security v4.0 — Bug Bounty Recon / Endpoint Extraction Engine
 
 Capabilities:
   - Extract ALL URLs, paths, and endpoints from source code

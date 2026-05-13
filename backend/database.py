@@ -150,9 +150,19 @@ class User(Base):
             "full_name": self.full_name,
             "is_admin": self.is_admin,
             "is_super_admin": self.is_super_admin,
+            "is_active": self.is_active,
+            "role": self.role,
             "subscription_tier": self.subscription_tier.value if self.subscription_tier else "free",
             "subscription_status": self.subscription_status.value if self.subscription_status else "trial",
+            "monthly_scan_limit": self.monthly_scan_limit or 10,
+            "has_stripe": bool(self.stripe_customer_id),
+            "stripe_customer_id": self.stripe_customer_id,
+            "stripe_subscription_id": self.stripe_subscription_id,
+            "email_verified": self.email_verified,
+            "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
         }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -213,8 +223,10 @@ class Scan(Base):
             "user_id": self.user_id,
             "target": self.target,
             "scan_type": self.scan_type,
+            "scan_profile": self.scan_profile,
             "status": self.status,
             "progress": self.progress,
+            "modules": self.modules or [],
             "modules_total": self.modules_total,
             "modules_completed": self.modules_completed,
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -222,6 +234,9 @@ class Scan(Base):
             "duration": self.duration,
             "total_findings": self.total_findings,
             "severity_counts": self.severity_counts,
+            "risk_score": self.risk_score,
+            "findings": [],
+            "logs": [],
         }
 
 class Finding(Base):
@@ -271,12 +286,15 @@ class Finding(Base):
             "title": self.title,
             "description": self.description,
             "matched_content": self.matched_content,
+            "module": self.module_name,
             "module_name": self.module_name,
             "category": self.category,
             "cwe": self.cwe,
+            "owasp": self.category or "",
             "remediation": self.remediation,
             "confidence": self.confidence,
             "tags": self.tags,
+            "timestamp": self.created_at.isoformat() if self.created_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
@@ -298,11 +316,13 @@ class ScanLog(Base):
     scan = relationship("Scan", back_populates="logs")
     
     def to_dict(self) -> dict:
+        ts = self.timestamp
         return {
+            "time": ts.strftime("%H:%M:%S") if ts else None,
             "level": self.level,
             "message": self.message,
             "module": self.module,
-            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "timestamp": ts.isoformat() if ts else None,
         }
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -96,3 +96,5 @@ venv/
 outputs/
 scans/
 logs/
+.hetty_data/
+.mitmproxy_data/

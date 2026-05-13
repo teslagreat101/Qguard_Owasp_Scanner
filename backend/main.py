@@ -1,5 +1,5 @@
 """
-Quantum Protocol v5.0 — FastAPI Backend
+Quantara Protocol v5.0 — FastAPI Backend
 Real-time OWASP Scanner Orchestrator with SSE streaming.
 Powered by the unified scanner_engine (Scanner_1 + Scanner_2 merged).
 
@@ -14,13 +14,15 @@ import sys
 import time
 import uuid
 import hashlib
+from contextlib import contextmanager, asynccontextmanager
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, List, Dict, Tuple
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Query, Response, Header, Request, WebSocket
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Query, Response, Header, Request, WebSocket, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -45,6 +47,23 @@ from scanner_engine.orchestrator import (
     normalize_finding as normalize_to_unified,
     SCAN_PROFILES,
 )
+
+# ── Import NEO Intelligence from orchestrator ──────────────────────────────────
+try:
+    from scanner_engine.orchestrator import (
+        run_neo_intelligence as _run_neo_intelligence,
+        get_neo_intelligence_summary as _get_neo_intelligence_summary,
+        get_neo_smart_payloads as _get_neo_smart_payloads,
+        neo_record_successful_exploit as _neo_record_exploit,
+        neo_ingest_endpoints as _neo_ingest_endpoints,
+        neo_ingest_findings_for_chaining as _neo_ingest_findings_for_chaining,
+        neo_compute_attack_surfaces as _neo_compute_attack_surfaces,
+        neo_get_learning_memory_stats as _neo_get_learning_memory_stats,
+    )
+    _NEO_INTELLIGENCE_AVAILABLE = True
+    logger = logging.getLogger(__name__)  # may not exist yet; overwritten below
+except Exception:
+    _NEO_INTELLIGENCE_AVAILABLE = False
 
 # ── Import database and Redis ──
 from backend.database import init_db, get_db, get_db_session, User, Scan, Finding, ScanLog, SubscriptionTier
@@ -82,6 +101,197 @@ except Exception:
     except Exception:
         _DECISION_ENGINE_AVAILABLE = False
         logger.warning("attack_decision_engine not available")
+
+# ── Swarm Intelligence Initialization ──
+try:
+    from backend.intelligence_nodes import get_swarm_orchestrator, SwarmOrchestrator
+    _SWARM_AVAILABLE = True
+except Exception:
+    try:
+        from intelligence_nodes import get_swarm_orchestrator, SwarmOrchestrator
+        _SWARM_AVAILABLE = True
+    except Exception as _sw_err:
+        _SWARM_AVAILABLE = False
+        logger.warning(f"Swarm Intelligence Nodes not available: {_sw_err}")
+
+# Swarm scan state store
+_swarm_scans: Dict[str, Dict[str, Any]] = {}
+
+# ── Swarm Intelligence Router ──
+swarm_router = APIRouter(prefix="/api/v1/swarm", tags=["swarm"])
+
+class SwarmScanRequest(BaseModel):
+    target: str
+    depth: str = "deep"
+    strategy: str = "autonomous"
+
+@swarm_router.get("/health")
+async def swarm_health():
+    return {"status": "ok", "swarm_engine": _SWARM_AVAILABLE}
+
+@swarm_router.post("/scan/start")
+async def start_swarm_scan(request: SwarmScanRequest, background_tasks: BackgroundTasks):
+    """Start an autonomous AI Red Team swarm scan."""
+    if not _SWARM_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Swarm Intelligence Nodes not available")
+
+    scan_id = str(uuid.uuid4())
+    orchestrator = get_swarm_orchestrator()
+
+    _swarm_scans[scan_id] = {
+        "scan_id": scan_id,
+        "target": request.target,
+        "status": "initializing",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "depth": request.depth,
+        "strategy": request.strategy,
+        "findings": [],
+        "risk_score": 0,
+        "severity_counts": {},
+        "attack_graph": {"nodes": [], "edges": []},
+    }
+
+    async def run_swarm():
+        try:
+            _swarm_scans[scan_id]["status"] = "running"
+            result = await orchestrator.execute_swarm_scan(
+                request.target, scan_id,
+                depth=request.depth, strategy=request.strategy,
+            )
+            _swarm_scans[scan_id].update({
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "findings": result.get("findings", []),
+                "total_findings": result.get("total_findings", 0),
+                "risk_score": result.get("risk_score", 0),
+                "severity_counts": result.get("severity_counts", {}),
+                "attack_graph": result.get("attack_graph", {}),
+            })
+        except Exception as e:
+            logger.error(f"Swarm scan error: {e}")
+            _swarm_scans[scan_id]["status"] = "error"
+            _swarm_scans[scan_id]["error"] = str(e)
+
+    background_tasks.add_task(run_swarm)
+
+    return {
+        "scan_id": scan_id,
+        "status": "initializing",
+        "target": request.target,
+        "total_nodes": 12,
+    }
+
+@swarm_router.get("/scan/{scan_id}/stream")
+async def stream_swarm_telemetry(scan_id: str):
+    """Stream real-time telemetry from swarm intelligence nodes via SSE."""
+    if not _SWARM_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Swarm Intelligence Nodes not available")
+
+    orchestrator = get_swarm_orchestrator()
+    emitter = orchestrator.emitter
+
+    async def swarm_event_generator():
+        q = emitter.subscribe()
+        try:
+            yield {
+                "event": "status",
+                "data": json.dumps({
+                    "status": "connected",
+                    "message": "Swarm telemetry stream active",
+                    "scan_id": scan_id,
+                }),
+            }
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15.0)
+                    if event.get("scan_id") != scan_id:
+                        continue
+                    event_type = event.get("event", "telemetry")
+                    data = event.get("data", {})
+                    data["scan_id"] = scan_id
+                    ts = event.get("timestamp", datetime.now(timezone.utc).isoformat())
+                    data["timestamp"] = ts
+                    time_str = ts[11:19] if len(ts) > 19 else ts
+
+                    # ── Map to agent_status for node lifecycle events
+                    if event_type in ("node_started", "node_completed", "node_error"):
+                        node_name = data.get("node", "")
+                        status_val = "active" if event_type == "node_started" else "completed" if event_type == "node_completed" else "error"
+                        yield {"event": "agent_status", "data": json.dumps({
+                            "node": node_name,
+                            "status": status_val,
+                        })}
+                        # Also emit as log for Live Telemetry panel
+                        level = "success" if event_type == "node_started" else "success" if event_type == "node_completed" else "error"
+                        msg = data.get("message", f"{node_name} — {status_val}")
+                        yield {"event": "log", "data": json.dumps({
+                            "time": time_str,
+                            "level": level,
+                            "message": msg,
+                            "module": node_name,
+                        })}
+
+                    # ── Map vulnerability findings to finding event
+                    elif event_type == "vulnerability_detected":
+                        yield {"event": "finding", "data": json.dumps(data)}
+                        # Also log this
+                        yield {"event": "log", "data": json.dumps({
+                            "time": time_str,
+                            "level": "warn",
+                            "message": f"⚠ Vulnerability: {data.get('title', 'Unknown')}",
+                            "module": data.get("node", data.get("node_name", "SWARM")),
+                        })}
+
+                    # ── Forward graph_update for real-time attack graph
+                    elif event_type == "graph_update":
+                        yield {"event": "graph_update", "data": json.dumps(data)}
+
+                    # ── Forward status and complete events for progress tracking
+                    elif event_type in ("status", "complete"):
+                        yield {"event": event_type, "data": json.dumps(data)}
+
+                    # ── Forward keepalive
+                    elif event_type == "keepalive":
+                        yield {"event": "keepalive", "data": json.dumps(data)}
+
+                    # ── All other events: emit as log for Live Telemetry
+                    else:
+                        msg = data.get("message", f"[{event_type}] event")
+                        node_name = data.get("node", "SWARM")
+                        level = "success" if "complet" in event_type else "info"
+                        yield {"event": "log", "data": json.dumps({
+                            "time": time_str,
+                            "level": level,
+                            "message": msg,
+                            "module": node_name,
+                        })}
+
+                        # If a finding was embedded in the data, also emit it
+                        if data.get("title") and data.get("severity"):
+                            yield {"event": "finding", "data": json.dumps(data)}
+
+                except asyncio.TimeoutError:
+                    yield {"event": "keepalive", "data": json.dumps({"timestamp": datetime.now(timezone.utc).isoformat()})}
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+        finally:
+            emitter.unsubscribe(q)
+
+    return EventSourceResponse(swarm_event_generator(), media_type="text/event-stream")
+
+@swarm_router.get("/scan/{scan_id}/graph")
+async def get_swarm_attack_graph(scan_id: str):
+    """Get the current attack graph for a swarm scan."""
+    orchestrator = get_swarm_orchestrator()
+    live_graph = orchestrator.attack_graph
+    # Prefer live graph if it has data (running scan)
+    if live_graph.get("nodes"):
+        return live_graph
+    # Fallback to stored scan data
+    if scan_id in _swarm_scans:
+        return _swarm_scans[scan_id].get("attack_graph", {"nodes": [], "edges": []})
+    return {"nodes": [], "edges": []}
+
 
 try:
     from backend.safe_scan_guard import create_fresh_guard
@@ -169,27 +379,48 @@ except Exception as _ace:
     _AttackChainCorrelator = None
     logger.warning(f"AttackChainCorrelator not available: {_ace}")
 
-# ── Import PQSI intelligence (Post-Quantum Security Intelligence) ──
-try:
-    from quantum_protocol.intelligence.quantum_timeline import QuantumTimelineEngine
-    from quantum_protocol.core.engine import compute_qqsi_score as _compute_qqsi
-    _PQSI_INTELLIGENCE_AVAILABLE = True
-    logger.info("PQSI intelligence engine loaded")
-except Exception as _pqsi_ie:
-    _PQSI_INTELLIGENCE_AVAILABLE = False
-    logger.warning(f"PQSI intelligence not available: {_pqsi_ie}")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # App Setup
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan handler for startup and shutdown events."""
+    # STARTUP
+    init_db()
+    if _STABILITY_AVAILABLE:
+        # Initialize semaphore within the running event loop
+        get_semaphore()
+        # Start background tasks
+        cleanup_task = asyncio.create_task(cleanup_old_scans(scans))
+        watchdog_task = asyncio.create_task(scan_watchdog(scans))
+        monitor_task = asyncio.create_task(resource_monitor(scans))
+        logger.info("Stability engines initialized: semaphore, cleanup, watchdog, resource monitor")
+    
+    yield
+    
+    # SHUTDOWN
+    if _STABILITY_AVAILABLE:
+        # Cancel background tasks on shutdown
+        cleanup_task.cancel()
+        watchdog_task.cancel()
+        monitor_task.cancel()
+        logger.info("Stability background tasks cancelled.")
+
+# The swarm routes are now handled by the swarm_router defined above.
+
 app = FastAPI(
-    title="Quantum Protocol OWASP Scanner API",
+    title="Helix Scanner API",
     version="5.0.0",
     description="Unified real-time security scanner — Scanner_1 + Scanner_2 merged. Full OWASP Top 10:2025 coverage.",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
+
+app.include_router(swarm_router)
 
 # Dynamic CORS origins from environment
 cors_origins = [
@@ -225,6 +456,21 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=3600,
 )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hetty Console API — Manual Pentesting Toolkit
+# ═══════════════════════════════════════════════════════════════════════════════
+try:
+    from backend.hetty_api import router as hetty_router
+    app.include_router(hetty_router)
+    logger.info("Hetty Console API router loaded")
+except Exception:
+    try:
+        from hetty_api import router as hetty_router
+        app.include_router(hetty_router)
+        logger.info("Hetty Console API router loaded (relative import)")
+    except Exception as _he:
+        logger.warning(f"Hetty Console API not available: {_he}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # In-Memory Scan Store (backed by Redis for persistence)
@@ -384,9 +630,12 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
 
         # Emit structured scan_started event for live visualization
         _append_event(scan, "scan_started", {
+            "scan_id": scan_id,
             "target": target,
             "scan_type": scan_type,
             "modules": valid_modules,
+            "modules_total": len(valid_modules),
+            "started_at": scan["started_at"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -424,7 +673,7 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
 
         if _enterprise_pack_total:
             _add_log(scan_id, "info", f"Enterprise payload engine loaded: {_enterprise_pack_total} signatures / {len(_enterprise_payload_packs)} packs")
-        _append_event(scan, "enterprise_telemetry", {
+        _telemetry_data = {
             "payload_packs": _enterprise_payload_packs,
             "total_payloads": _enterprise_pack_total,
             "mutation_engine": _MUTATOR_AVAILABLE,
@@ -433,7 +682,9 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
             "adaptive_engine": _ENTERPRISE_ORCHESTRATOR_AVAILABLE,
             "modules_loaded": len(valid_modules),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        scan["enterprise_telemetry"] = _telemetry_data
+        _append_event(scan, "enterprise_telemetry", _telemetry_data)
 
         # ── Stability: wait for slot if scan was queued ───────────────────────
         if _STABILITY_AVAILABLE and scan.get("status") == "queued":
@@ -453,7 +704,6 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         owasp_counts = {}
         _last_risk_score = 0
-        _all_raw_findings = []  # Accumulate raw findings for PQSI post-processing
 
         for idx, module_key in enumerate(valid_modules):
             if scan.get("cancelled"):
@@ -498,14 +748,40 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
                 async with _module_semaphore:
                     _hb_task = asyncio.create_task(_module_heartbeat(scan_id, meta["name"], module_key))
                     try:
-                        # Use asyncio.wait_for to prevent indefinite blocking
-                        findings = await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                bounded_executor,
-                                lambda mk=module_key: run_module_scan(mk, target, scan_type, target_type=target_type)
-                            ),
-                            timeout=60  # 1 minute timeout per module
-                        )
+                        if module_key == "neo_intelligence" and _NEO_INTELLIGENCE_AVAILABLE:
+                            # NEO intelligence runs async and takes current findings
+                            current_findings = scan.get("findings", [])
+                            neo_result = await _run_neo_intelligence(
+                                target=target,
+                                scan_type=scan_type,
+                                findings=current_findings
+                            )
+                            scan["neo_intelligence_result"] = neo_result
+                            if "error" in neo_result:
+                                findings = []
+                                _add_log(scan_id, "error", f"NEO Intelligence failed: {neo_result['error']}", module_key)
+                            else:
+                                # Extract actual findings from the NEO result
+                                neo_all = neo_result.get("all_findings", [])
+                                neo_verified = neo_result.get("verified_findings", [])
+                                
+                                # Use a dict by ID to deduplicate and combine
+                                combined_findings = {f.get("id", str(uuid.uuid4())): f for f in neo_all}
+                                for f in neo_verified:
+                                    fid = f.get("id", str(uuid.uuid4()))
+                                    combined_findings[fid] = f
+                                
+                                findings = list(combined_findings.values())
+                                _add_log(scan_id, "success", f"NEO Intelligence: Found {len(findings)} results ({len(neo_verified)} verified)", module_key)
+                        else:
+                            # Standard modules run in executor
+                            findings = await asyncio.wait_for(
+                                asyncio.get_event_loop().run_in_executor(
+                                    bounded_executor,
+                                    lambda mk=module_key: run_module_scan(mk, target, scan_type, target_type=target_type)
+                                ),
+                                timeout=120  # increased for heavy enterprise modules
+                            )
                     finally:
                         _hb_task.cancel()
                         try:
@@ -526,12 +802,23 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
                 })
                 _add_log(scan_id, "success", f"[{meta['name']}] Complete — {findings_count} finding(s)", module_key)
 
-                # Track raw findings for PQSI post-processing
-                if findings and module_key.startswith("pqsi_") or module_key == "quantum_pqc":
-                    _all_raw_findings.extend(findings)
 
                 for finding in findings:
-                    normalized = normalize_finding(finding, module_key)
+                    normalized_obj = normalize_finding(finding, module_key)
+                    # Ensure we have a dictionary for serialization
+                    if hasattr(normalized_obj, "to_dict"):
+                        normalized = normalized_obj.to_dict()
+                    elif isinstance(normalized_obj, dict):
+                        normalized = normalized_obj
+                    else:
+                        # Fallback for unexpected types
+                        normalized = {
+                            "id": str(uuid.uuid4()),
+                            "title": str(normalized_obj),
+                            "severity": "info",
+                            "module": module_key,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
 
                     # ── Deduplication: skip if this fingerprint was seen already ──
                     if _STABILITY_AVAILABLE and is_duplicate(normalized, scan["dedup_set"]):
@@ -600,12 +887,17 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
                     # Emit endpoint_discovered event for Three.js visualization
                     ep = normalized.get("file") or normalized.get("endpoint") or ""
                     if ep and ("http" in ep or "/" in ep):
-                        _append_event(scan, "endpoint_discovered", {
+                        ep_data = {
                             "url": ep,
                             "method": normalized.get("method", "GET"),
                             "finding_id": normalized["id"],
                             "severity": normalized["severity"],
-                        })
+                        }
+                        _append_event(scan, "endpoint_discovered", ep_data)
+                        # Persist for report rehydration (cap at 500)
+                        ep_list = scan.get("endpoints_discovered", [])
+                        if len(ep_list) < 500:
+                            ep_list.append(ep_data)
 
                     # Update severity counts
                     sev = normalized.get("severity", "info").lower()
@@ -681,7 +973,7 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
                         _packs_used = {k: _enterprise_payload_packs.get(k, 0) for k in _relevant_packs if k in _enterprise_payload_packs}
                         _total_used = sum(_packs_used.values())
                         _mutations_count = _total_used * 8 if _mutator_instance else 0  # 8 variants per payload
-                        _append_event(scan, "payload_executed", {
+                        _pe_data = {
                             "module": module_key,
                             "packs_used": _packs_used,
                             "total_payloads_fired": _total_used,
@@ -689,7 +981,12 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
                             "findings_triggered": len(findings),
                             "endpoint": target,
                             "payload_type": "multi-vector",
-                        })
+                        }
+                        _append_event(scan, "payload_executed", _pe_data)
+                        # Persist for report rehydration (cap at 100)
+                        scan.setdefault("payloads_executed", [])
+                        if len(scan["payloads_executed"]) < 100:
+                            scan["payloads_executed"].append(_pe_data)
                         _add_log(scan_id, "info",
                             f"[{meta['name']}] {_total_used} payloads + {_mutations_count} mutations → {len(findings)} hits")
 
@@ -703,10 +1000,32 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
                         )
                         if rec:
                             scan["ai_recommendations"] = rec.to_dict()
+                            scan["ai_decision"] = rec.to_dict()
                             _append_event(scan, "ai_decision", rec.to_dict())
                             _add_log(scan_id, "info", f"AI Decision: {rec.rationale}", module_key)
                     except Exception as _e:
                         logger.debug(f"Attack decision engine error: {_e}")
+
+                # ── NEO Intelligence: Feed findings into graph + attack brain ──
+                if findings and _NEO_INTELLIGENCE_AVAILABLE:
+                    try:
+                        # After endpoint extractor — populate the intelligence graph
+                        if module_key == "endpoint":
+                            _ep_dicts = []
+                            for _f in findings:
+                                _url = ""
+                                if isinstance(_f, dict):
+                                    _url = _f.get("url", _f.get("endpoint", ""))
+                                elif hasattr(_f, "url"):
+                                    _url = getattr(_f, "url", "")
+                                if _url:
+                                    _ep_dicts.append({"url": _url, "method": getattr(_f, "method", "GET") if not isinstance(_f, dict) else _f.get("method", "GET")})
+                            if _ep_dicts:
+                                _ingest_result = _neo_ingest_endpoints(_ep_dicts)
+                                _add_log(scan_id, "info",
+                                    f"NEO Graph: Ingested {_ingest_result.get('ingested', 0)} endpoints", module_key)
+                    except Exception as _neo_feed_err:
+                        logger.debug(f"NEO graph feeding error: {_neo_feed_err}")
 
                 # ── Safe guard health events ──────────────────────────────────
                 if guard:
@@ -764,9 +1083,9 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
         scan["progress"] = 100
         state_mgr.set_progress(scan_id, 100)
 
-        if scan["status"] != "cancelled":
-            scan["status"] = "completed"
-            state_mgr.set_scan_status(scan_id, "completed")
+        # NOTE: We do NOT set status="completed" here yet.
+        # Post-processing phases (Chains, PQSI, Neo4j, Verifier) run next
+        # and they need the scan to be in "running" state for SSE consistency.
 
         scan["active_module"] = None
         scan["completed_at"] = datetime.now(timezone.utc).isoformat()
@@ -798,24 +1117,23 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
             reverse=True
         )[:10]
 
-        # Save to database
+        # Sync progress to database
         try:
             db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
             if db_scan:
-                db_scan.status = scan["status"]
                 db_scan.progress = 100.0
                 db_scan.completed_at = datetime.now(timezone.utc)
-                db_scan.duration = scan["duration"]
-                db_scan.total_findings = scan["total_findings"]
+                db_scan.duration = round(time.time() - start_time, 2)
+                db_scan.total_findings = scan.get("total_findings_count", len(scan["findings"]))
                 db_scan.severity_counts = severity_counts
-                db_scan.risk_score = scan["risk_score"]
+                db_scan.risk_score = risk_score
+                db_scan.modules_completed = scan.get("modules_completed", len(valid_modules))
                 db.commit()
-                print(f"DEBUG: execute_scan: Scan {scan_id} record updated in SQL (Findings: {scan['total_findings']}, Risk: {scan['risk_score']})")
         except Exception as e:
-            print(f"Database save error: {e}")
+            logger.warning(f"Database progress sync error: {e}")
             db.rollback()
 
-        total_findings_count = len(scan["findings"])
+        total_findings_count = scan.get("total_findings_count", len(scan["findings"]))
 
         # ── Phase: Enterprise Attack Chain Correlation ────────────────────────
         if scan["findings"] and _CHAIN_CORRELATOR_AVAILABLE and _AttackChainCorrelator:
@@ -862,6 +1180,125 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
                         f"{_summary.get('attack_chain_count',0)} attack chains")
             except Exception as _es_err:
                 logger.debug(f"Enterprise scan summary error: {_es_err}")
+
+        # ── Phase: NEO Intelligence Analysis ──────────────────────────────────
+        if _NEO_INTELLIGENCE_AVAILABLE and scan["findings"]:
+            try:
+                _add_log(scan_id, "info", "NEO Intelligence — Autonomous analysis engaged")
+                _append_event(scan, "neo_phase_started", {
+                    "phase": "MAP→TRACE→REASON→HYPOTHESIZE→EXPLOIT→VERIFY→LEARN",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+
+                _neo_result = await _run_neo_intelligence(
+                    target=target,
+                    scan_type=effective_type,
+                    findings=scan["findings"],
+                )
+
+                if _neo_result and not _neo_result.get("error"):
+                    scan["neo_intelligence"] = _neo_result
+
+                    # Extract NEO findings and add them to the scan
+                    _neo_findings = _neo_result.get("findings", [])
+                    _neo_attack_chains = _neo_result.get("attack_chains", [])
+                    _neo_hypotheses = _neo_result.get("hypotheses", [])
+                    _neo_risk_score = _neo_result.get("final_risk_score", 0)
+
+                    # Normalize NEO findings into the scan's findings list
+                    _neo_added = 0
+                    for _nf in _neo_findings:
+                        _neo_normalized = {
+                            "id": f"NEO-{_nf.get('id', 'unknown')}",
+                            "title": _nf.get("title", "NEO Intelligence Finding"),
+                            "severity": _nf.get("severity", "medium"),
+                            "description": _nf.get("description", ""),
+                            "category": _nf.get("category", "NEO-Intelligence"),
+                            "module": "neo_intelligence",
+                            "module_name": "NEO Intelligence Engine",
+                            "confidence": _nf.get("confidence", 0.75),
+                            "cwe": _nf.get("cwe", ""),
+                            "owasp": _nf.get("owasp", "A01-A10:2025"),
+                            "file": _nf.get("endpoint", _nf.get("file", "")),
+                            "line_number": _nf.get("line_number", 0),
+                            "matched_content": _nf.get("payload", ""),
+                            "remediation": _nf.get("remediation", ""),
+                            "tags": ["neo-intelligence", "autonomous"] + _nf.get("tags", []),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "neo_verified": _nf.get("verified", False),
+                            "neo_phase": _nf.get("phase", ""),
+                        }
+                        scan["findings"].append(_neo_normalized)
+                        _append_event(scan, "finding", _neo_normalized)
+                        _neo_added += 1
+
+                        # Update severity counts
+                        _neo_sev = _neo_normalized.get("severity", "info").lower()
+                        if _neo_sev in severity_counts:
+                            severity_counts[_neo_sev] += 1
+
+                    # Emit NEO intelligence event
+                    _append_event(scan, "neo_intelligence", {
+                        "findings_count": len(_neo_findings),
+                        "findings_added": _neo_added,
+                        "attack_chains": _neo_attack_chains[:10],
+                        "attack_chain_count": len(_neo_attack_chains),
+                        "hypotheses_count": len(_neo_hypotheses),
+                        "neo_risk_score": _neo_risk_score,
+                        "phases_completed": _neo_result.get("phases_completed", []),
+                        "attack_surfaces": _neo_result.get("attack_surfaces", [])[:5],
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+
+                    _add_log(scan_id, "success",
+                        f"NEO Intelligence: {_neo_added} findings | "
+                        f"{len(_neo_attack_chains)} attack chains | "
+                        f"{len(_neo_hypotheses)} hypotheses | "
+                        f"Risk: {_neo_risk_score}/100")
+
+                    # If NEO found critical chains, log them
+                    for _nc in _neo_attack_chains[:3]:
+                        if _nc.get("severity") in ("critical", "high"):
+                            _add_log(scan_id, "error",
+                                f"NEO Chain: {_nc.get('name','')} — {_nc.get('description','')[:80]}")
+                else:
+                    _add_log(scan_id, "warn", f"NEO Intelligence: {_neo_result.get('error', 'No results')}")
+
+            except Exception as _neo_err:
+                logger.warning(f"NEO Intelligence error: {_neo_err}")
+                _add_log(scan_id, "warn", f"NEO Intelligence analysis skipped: {str(_neo_err)[:100]}")
+
+        # ── Phase: NEO Attack Chain Discovery ─────────────────────────────────
+        if _NEO_INTELLIGENCE_AVAILABLE and scan["findings"]:
+            try:
+                _chain_result = _neo_ingest_findings_for_chaining(scan["findings"])
+                _chains = _chain_result.get("chains", [])
+                _hypotheses = _chain_result.get("hypotheses", [])
+                if _chains:
+                    scan.setdefault("attack_chains", []).extend(_chains)
+                    _append_event(scan, "attack_chain_created", {
+                        "chain_count": len(_chains),
+                        "top_chain": _chains[0].get("name", "") if _chains else "",
+                        "hypotheses_count": len(_hypotheses),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                    _add_log(scan_id, "success",
+                        f"NEO Attack Brain: {len(_chains)} attack chain(s), "
+                        f"{len(_hypotheses)} hypothesis(es)")
+
+                    for _chain in _chains[:3]:
+                        _chain_risk = _chain.get("chain_risk_score", 0)
+                        if _chain_risk > 0.6:
+                            _add_log(scan_id, "error",
+                                f"Attack Chain [{_chain.get('chain_severity','?').upper()}]: "
+                                f"{_chain.get('name', 'Unknown')} (risk: {_chain_risk:.2f})")
+
+                # Compute attack surfaces from the intelligence graph
+                _surfaces = _neo_compute_attack_surfaces()
+                if _surfaces and not _surfaces.get("error"):
+                    scan["neo_attack_surfaces"] = _surfaces
+            except Exception as _chain_err:
+                logger.debug(f"NEO attack chaining error: {_chain_err}")
 
         # ── Phase: Exploit Verification (URL scans only) ──────────────────────
         effective_type = target_type or scan_type or "directory"
@@ -944,59 +1381,47 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
             except Exception as _ae:
                 logger.debug(f"Attack summary error: {_ae}")
 
-        # ── Phase: PQSI Post-Processing (Quantum Intelligence) ────────────
-        if _PQSI_INTELLIGENCE_AVAILABLE and any(
-            m.startswith("pqsi_") for m in valid_modules
-        ):
+        # ── Phase: Finalize Scan Status ─────────────────────────────────────────────
+        if scan["status"] not in ("cancelled", "error"):
+            scan["status"] = "completed"
+            state_mgr.set_scan_status(scan_id, "completed")
+
+            # Final Database Update
             try:
-                _add_log(scan_id, "info", "PQSI — Computing quantum intelligence metrics")
-                _timeline_engine = QuantumTimelineEngine()
+                db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+                if db_scan:
+                    db_scan.status = "completed"
+                    db_scan.completed_at = datetime.now(timezone.utc)
+                    db_scan.duration = round(time.time() - start_time, 2)
+                    # Persist scan metadata for history rehydration
+                    db_scan.total_findings = total_findings_count
+                    db_scan.severity_counts = severity_counts
+                    db_scan.risk_score = risk_score
+                    db.commit()
 
-                # Collect raw CryptoFinding objects from PQSI modules
-                _pqsi_raw = [f for f in _all_raw_findings if hasattr(f, "family")]
-                _timeline_engine.compute_timeline(_pqsi_raw)
-
-                # Compute adoption index from library agent findings
-                _pqc_adopt = 0.0
-                for _rf in _pqsi_raw:
-                    _aidx = getattr(_rf, "pqc_adoption_index", None)
-                    if _aidx and _aidx > _pqc_adopt:
-                        _pqc_adopt = float(_aidx)
-
-                # Compute QQSI
-                _qqsi = _compute_qqsi(_pqsi_raw, _pqc_adopt)
-                _exposure = _timeline_engine.generate_exposure_summary(_pqsi_raw)
-
-                _hndl_count = sum(
-                    1 for _rf in _pqsi_raw
-                    if hasattr(_rf, "family") and "HNDL" in str(getattr(_rf.family, "value", ""))
-                )
-                _recon_detected = any(
-                    hasattr(_rf, "family") and "Recon" in str(getattr(_rf.family, "value", ""))
-                    for _rf in _pqsi_raw
-                )
-
-                scan["quantum_intelligence"] = {
-                    "qqsi_score": _qqsi["qqsi"],
-                    "qqsi_grade": _qqsi["grade"],
-                    "components": _qqsi["components"],
-                    "pqc_adoption_index": _pqc_adopt,
-                    "hndl_findings_count": _hndl_count,
-                    "quantum_recon_detected": _recon_detected,
-                    "exposure_summary": _exposure,
-                    "migration_priority": _qqsi.get("migration_priority", "unknown"),
-                }
-
-                _append_event(scan, "quantum_intelligence", scan["quantum_intelligence"])
-                _add_log(scan_id, "success",
-                    f"PQSI complete — QQSI: {_qqsi['qqsi']}/100 [{_qqsi['grade']}] | "
-                    f"PQC Adoption: {_pqc_adopt} | HNDL: {_hndl_count} | "
-                    f"Migration: {_qqsi.get('migration_priority', 'unknown')}")
-            except Exception as _pqsi_err:
-                logger.warning(f"PQSI post-processing error: {_pqsi_err}")
+                    # Batch-persist scan logs to DB for historical retrieval
+                    try:
+                        log_batch = []
+                        for log_entry in scan.get("logs", []):
+                            log_batch.append(ScanLog(
+                                scan_id=scan_id,
+                                level=log_entry.get("level", "info"),
+                                message=log_entry.get("message", ""),
+                                module=log_entry.get("module"),
+                            ))
+                        if log_batch:
+                            db.bulk_save_objects(log_batch)
+                            db.commit()
+                    except Exception as _log_err:
+                        logger.debug(f"Log persistence error (non-critical): {_log_err}")
+                        db.rollback()
+            except Exception as _fdb_err:
+                logger.warning(f"Final database sync error: {_fdb_err}")
+                db.rollback()
 
         _add_log(scan_id, "success",
             f"Scan complete — {total_findings_count} findings / {len(valid_modules)} modules / {scan['duration']}s / Risk {risk_score}/100 [{risk_level}]")
+
         _append_event(scan, "complete", {
             "total_findings":  total_findings_count,
             "duration":        scan["duration"],
@@ -1007,7 +1432,6 @@ async def execute_scan(scan_id: str, target: str, scan_type: str, modules: list[
             "severity_counts": severity_counts,
             "dedup_skipped":   scan.get("dedup_skipped", 0),
         })
-        state_mgr.publish_status(scan_id, scan["status"], {"total_findings": total_findings_count, "duration": scan["duration"]})
 
         # Broadcast scan completion via WebSocket
         asyncio.create_task(ws_manager.broadcast_scan_update(scan_id, {
@@ -1099,20 +1523,7 @@ def _compute_risk_score(
 # API Endpoints
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup and launch stability background tasks."""
-    init_db()
-    if _STABILITY_AVAILABLE:
-        # Initialize semaphore within the running event loop
-        get_semaphore()
-        # Start memory cleanup (sweeps scans dict every 30min, evicts after 1hr TTL)
-        asyncio.create_task(cleanup_old_scans(scans))
-        # Start watchdog (kills scans stuck >120s with no progress)
-        asyncio.create_task(scan_watchdog(scans))
-        # Start resource monitor (throttle on CPU >80% or RAM >75%, requires psutil)
-        asyncio.create_task(resource_monitor(scans))
-        logger.info("Stability engines initialized: semaphore, cleanup, watchdog, resource monitor")
+# Lifespan events are handled in the lifespan context manager above.
 
 
 # ── Health ────────────────────────────────────────────────────
@@ -1305,6 +1716,8 @@ async def start_scan(
         "ai_recommendations": {},
         "verified_findings": [],
         "attack_summary": {},
+        "attack_chains": [],
+        "endpoints_discovered": [],
         "coverage_intelligence": {
             "get_params_tested": 0,
             "post_bodies_tested": 0,
@@ -1351,12 +1764,52 @@ async def start_scan(
     return ScanResponse(scan_id=scan_id, status="started", modules=valid_modules, total_patterns=total_patterns)
 
 
-@app.get("/api/v1/scan/{scan_id}")
-@app.get("/api/v1/scan/{scan_id}/status")
-async def get_scan_status(scan_id: str, db: Session = Depends(get_db)):
-    """Get current status of a scan."""
+async def get_authorized_scan(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """Helper to retrieve a scan and verify ownership."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+    
+    # Check in-memory scans first
     if scan_id in scans:
         scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+            logger.warning(f"Unauthorized access attempt to scan {scan_id} by user {local_user_id}")
+            raise HTTPException(status_code=403, detail="Unauthorized: Scan does not belong to you")
+        return scan
+    
+    # Check Database
+    db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+        
+    if not is_super_admin and db_scan.user_id != local_user_id:
+        logger.warning(f"Unauthorized access attempt to scan {scan_id} by user {local_user_id} (DB)")
+        raise HTTPException(status_code=403, detail="Unauthorized: Scan does not belong to you")
+        
+    return db_scan.to_dict()
+
+
+@app.get("/api/v1/scan/{scan_id}")
+@app.get("/api/v1/scan/{scan_id}/status")
+async def get_scan_status(
+    scan_id: str, 
+    db: Session = Depends(get_db),
+    subscription: Dict[str, Any] = Depends(get_user_subscription)
+):
+    """Get current status of a scan."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id in scans:
+        scan = scans[scan_id]
+        # ownership check
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
         elapsed = 0
         if scan["started_at"]:
             try:
@@ -1371,8 +1824,8 @@ async def get_scan_status(scan_id: str, db: Session = Depends(get_db)):
             total_findings=scan.get("total_findings_count", len(scan["findings"])),
             modules_completed=scan["modules_completed"],
             modules_total=scan["modules_total"],
-            started_at=scan["started_at"],
-            completed_at=scan.get("completed_at"),
+            started_at=scan["started_at"] if isinstance(scan["started_at"], str) else (scan["started_at"].isoformat() if scan["started_at"] else None),
+            completed_at=scan["completed_at"] if isinstance(scan.get("completed_at"), str) else (scan.get("completed_at").isoformat() if scan.get("completed_at") else None),
             elapsed_seconds=round(elapsed, 1),
             duration=scan.get("duration", 0),
             severity_counts=scan.get("severity_counts", {}),
@@ -1384,6 +1837,9 @@ async def get_scan_status(scan_id: str, db: Session = Depends(get_db)):
     if not db_scan:
         raise HTTPException(status_code=404, detail="Scan not found")
         
+    if not is_super_admin and db_scan.user_id != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
     return ScanStatusModel(
         scan_id=scan_id,
         status=db_scan.status,
@@ -1401,46 +1857,155 @@ async def get_scan_status(scan_id: str, db: Session = Depends(get_db)):
     )
 
 
-@app.get("/api/v1/scans")
-async def list_scans(
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    subscription: Dict[str, Any] = Depends(get_user_subscription),
-    db: Session = Depends(get_db)
-):
-    """List all scans for the current user."""
-    local_user_id = subscription.get("local_user_id")
-    
-    query = db.query(Scan)
-    if local_user_id:
-        query = query.filter(Scan.user_id == local_user_id)
-    
-    total = query.count()
-    db_scans = query.order_by(Scan.created_at.desc()).offset(offset).limit(limit).all()
-    
-    return {
-        "scans": [s.to_dict() for s in db_scans],
-        "total": total,
-        "limit": limit,
-        "offset": offset
-    }
+# NOTE: /api/v1/scans is defined once below (list_history) to avoid duplicate route.
 
 
 @app.delete("/api/v1/scan/{scan_id}")
 @app.post("/api/v1/scan/{scan_id}/cancel")
-async def cancel_scan(scan_id: str):
+async def cancel_scan(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription)
+):
     """Cancel a running scan."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
     if scan_id not in scans:
         raise HTTPException(status_code=404, detail="Scan not found")
+    
+    scan = scans[scan_id]
+    if not is_super_admin and scan.get("user_id") != local_user_id:
+         raise HTTPException(status_code=403, detail="Unauthorized")
+
     scans[scan_id]["cancelled"] = True
     return {"scan_id": scan_id, "status": "cancelling"}
+
+
+# ── NEO Intelligence Endpoints ─────────────────────────────────
+
+@app.get("/api/v1/scan/{scan_id}/neo-intelligence")
+async def get_neo_intelligence(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription)
+):
+    """Get the NEO Intelligence analysis for a specific scan."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id not in scans:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    
+    scan = scans[scan_id]
+    if not is_super_admin and scan.get("user_id") != local_user_id:
+         raise HTTPException(status_code=403, detail="Unauthorized")
+
+    neo_data = scan.get("neo_intelligence", {})
+    if not neo_data and not _NEO_INTELLIGENCE_AVAILABLE:
+        return {"status": "unavailable", "message": "NEO Intelligence Layer not enabled"}
+    
+    return neo_data
+
+@app.get("/api/v1/neo-intelligence/status")
+async def get_neo_intelligence_status():
+    """Get the current health and statistics of the NEO Intelligence system."""
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="NEO Intelligence Layer not enabled")
+    
+    try:
+        return _get_neo_intelligence_summary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving NEO status: {str(e)}")
+
+@app.get("/api/v1/neo-intelligence/smart-payloads")
+async def get_neo_smart_payloads_endpoint(
+    category: str = "xss",
+    context: str = "",
+    technology: str = "",
+    waf_evasion_level: int = 0,
+    max_payloads: int = 20,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
+    """Get context-aware smart payloads from the NEO generator."""
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="NEO Intelligence Layer not enabled")
+
+    try:
+        payloads = _get_neo_smart_payloads(
+            category=category,
+            context=context,
+            technology=technology,
+            waf_evasion_level=waf_evasion_level,
+            max_payloads=max_payloads,
+        )
+        return {
+            "category": category,
+            "context": context,
+            "technology": technology,
+            "payloads": payloads,
+            "count": len(payloads),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving smart payloads: {str(e)}")
+
+
+@app.get("/api/v1/neo-intelligence/attack-surfaces")
+async def get_neo_attack_surfaces(
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
+    """Get computed attack surfaces from the NEO Intelligence Graph."""
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="NEO Intelligence Layer not enabled")
+
+    try:
+        surfaces = _neo_compute_attack_surfaces()
+        return {"attack_surfaces": surfaces}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/neo-intelligence/learning-memory")
+async def get_neo_learning_memory(
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
+    """Get cross-scan learning memory statistics and trending vulnerabilities."""
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="NEO Intelligence Layer not enabled")
+
+    try:
+        return _neo_get_learning_memory_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/scan/{scan_id}/attack-chains")
+async def get_scan_attack_chains(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
+    """Get NEO-discovered attack chains for a specific scan."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id not in scans:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    scan = scans[scan_id]
+    if not is_super_admin and scan.get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    return {
+        "scan_id": scan_id,
+        "attack_chains": scan.get("attack_chains", []),
+        "neo_attack_surfaces": scan.get("neo_attack_surfaces", {}),
+        "hypotheses": scan.get("neo_intelligence", {}).get("hypotheses", []),
+    }
 
 
 # ── Findings ───────────────────────────────────────────────────
 
 @app.get("/api/v1/scan/{scan_id}/findings")
 async def get_scan_findings(
-    scan_id: str,
+    scan_id: str, 
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     severity: Optional[str] = None,
@@ -1448,22 +2013,29 @@ async def get_scan_findings(
     search: Optional[str] = None,
     sort_by: str = "severity",
     sort_order: str = "desc",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    subscription: Dict[str, Any] = Depends(get_user_subscription)
 ):
     """Get paginated findings for a scan with filtering and sorting."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
     if scan_id in scans:
-        findings = scans[scan_id]["findings"]
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+        findings = scan["findings"]
     else:
         # Check DB
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        
+        if not is_super_admin and db_scan.user_id != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
         db_findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()
-        if not db_findings:
-            # Maybe the scan exists but has 0 findings
-            db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
-            if not db_scan:
-                raise HTTPException(status_code=404, detail="Scan not found")
-            findings = []
-        else:
-            findings = [f.to_dict() for f in db_findings]
+        findings = [f.to_dict() for f in db_findings]
 
     # Apply filters
     if severity:
@@ -1513,10 +2085,19 @@ async def get_scan_findings(
 # ── SSE Streaming ─────────────────────────────────────────────
 
 @app.get("/api/v1/scan/{scan_id}/stream")
-async def stream_scan_events(scan_id: str):
+async def stream_scan_events(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription)
+):
     """Stream real-time scan events via Server-Sent Events."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
     if scan_id not in scans:
         raise HTTPException(status_code=404, detail="Scan not found")
+    
+    if not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
     async def event_generator():
         # cursor = absolute index of next event to send (survives events list trimming)
@@ -1602,14 +2183,63 @@ async def stream_scan_events(scan_id: str):
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Autonomous AI Red Team — Swarm Intelligence Node API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+try:
+    from backend.intelligence_nodes import get_swarm_orchestrator, SwarmOrchestrator
+    _SWARM_AVAILABLE = True
+except Exception:
+    try:
+        from intelligence_nodes import get_swarm_orchestrator, SwarmOrchestrator
+        _SWARM_AVAILABLE = True
+    except Exception as _sw_err:
+        _SWARM_AVAILABLE = False
+        logger.warning(f"Swarm Intelligence Nodes not available: {_sw_err}")
+
+
+class SwarmScanRequest(BaseModel):
+    target: str
+    depth: str = "deep"
+    strategy: str = "autonomous"
+
+
+# Swarm scan state store
+_swarm_scans: Dict[str, Dict[str, Any]] = {}
+
+
+# Swarm routes are now handled by the swarm_router near the app initialization.
+
+
 # ── Reports ────────────────────────────────────────────────────
 
 @app.get("/api/v1/scan/{scan_id}/report")
-async def get_scan_report(scan_id: str, format: str = "json"):
+async def get_scan_report(
+    scan_id: str, 
+    format: str = "json",
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db)
+):
     """Generate comprehensive scan report."""
-    if scan_id not in scans:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    scan = scans[scan_id]
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+    else:
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if not is_super_admin and db_scan.user_id != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+        scan = db_scan.to_dict()
+        findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()
+        scan["findings"] = [f.to_dict() for f in findings]
+        scan["logs"] = [l.to_dict() for l in db.query(ScanLog).filter(ScanLog.scan_id == scan_id).all()]
+
     findings = scan["findings"]
 
     # Severity summary
@@ -1668,7 +2298,7 @@ async def get_scan_report(scan_id: str, format: str = "json"):
         "owasp_coverage": owasp_coverage,
         "total_findings": len(findings),
         "findings": findings,
-        "logs": scan["logs"],
+        "logs": scan.get("logs", []),
         "top_files": top_files,
         "risk_score": scan.get("risk_score", 0),
         "confidence": scan.get("confidence", "LOW"),
@@ -1682,15 +2312,40 @@ async def get_scan_report(scan_id: str, format: str = "json"):
         "verified_findings": scan.get("verified_findings", []),
         "coverage_intelligence": scan.get("coverage_intelligence", {}),
         "ai_recommendations": scan.get("ai_recommendations", {}),
+        "quantara_intelligence": scan.get("quantara_intelligence"),
+        # Intelligence rehydration fields
+        "attack_chains": scan.get("attack_chains", []),
+        "endpoints_discovered": scan.get("endpoints_discovered", []),
+        "enterprise_telemetry": scan.get("enterprise_telemetry"),
+        "enterprise_attack_chains": scan.get("enterprise_attack_chains", []),
+        "neo_attack_surfaces": scan.get("neo_attack_surfaces", {}),
+        "ai_decision": scan.get("ai_decision"),
+        "payloads_executed": scan.get("payloads_executed", []),
     }
 
 
 @app.get("/api/v1/scan/{scan_id}/logs")
-async def get_scan_logs(scan_id: str, db: Session = Depends(get_db)):
+async def get_scan_logs(
+    scan_id: str, 
+    db: Session = Depends(get_db),
+    subscription: Dict[str, Any] = Depends(get_user_subscription)
+):
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
     if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
         return {"logs": scans[scan_id]["logs"]}
 
     # Check DB
+    db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+    if not db_scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if not is_super_admin and db_scan.user_id != local_user_id:
+         raise HTTPException(status_code=403, detail="Unauthorized")
+
     db_logs = db.query(ScanLog).filter(ScanLog.scan_id == scan_id).order_by(ScanLog.timestamp.asc()).all()
     return {"logs": [l.to_dict() for l in db_logs]}
 
@@ -1698,11 +2353,27 @@ async def get_scan_logs(scan_id: str, db: Session = Depends(get_db)):
 # ── Attack Intelligence Endpoints ──────────────────────────────
 
 @app.get("/api/v1/scan/{scan_id}/attack-graph")
-async def get_attack_graph(scan_id: str):
+async def get_attack_graph(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db)
+):
     """Return Neo4j attack graph paths and breach simulation."""
-    if scan_id not in scans:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    scan = scans[scan_id]
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+    else:
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if not is_super_admin and db_scan.user_id != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+        scan = db_scan.to_dict()
+
     return {
         "scan_id":           scan_id,
         "attack_paths":      scan.get("attack_paths", []),
@@ -1712,26 +2383,61 @@ async def get_attack_graph(scan_id: str):
 
 
 @app.get("/api/v1/scan/{scan_id}/verified-findings")
-async def get_verified_findings(scan_id: str):
+async def get_verified_findings(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db)
+):
     """Return only proof-verified findings with evidence."""
-    if scan_id not in scans:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    scan = scans[scan_id]
-    verified = [f for f in scan.get("findings", []) if f.get("verified")]
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+        findings = scan.get("findings", [])
+        verified_proofs = scan.get("verified_findings", [])
+    else:
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if not is_super_admin and db_scan.user_id != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+        findings = [f.to_dict() for f in db.query(Finding).filter(Finding.scan_id == scan_id).all()]
+        verified_proofs = db_scan.verified_findings or []
+
+    verified = [f for f in findings if f.get("verified")]
     return {
         "scan_id":            scan_id,
         "verified_count":     len(verified),
         "verified_findings":  verified,
-        "verification_proofs": scan.get("verified_findings", []),
+        "verification_proofs": verified_proofs,
     }
 
 
 @app.get("/api/v1/scan/{scan_id}/coverage")
-async def get_scan_coverage(scan_id: str):
+async def get_scan_coverage(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db)
+):
     """Return target coverage intelligence metrics."""
-    if scan_id not in scans:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    scan = scans[scan_id]
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+    else:
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if not is_super_admin and db_scan.user_id != local_user_id:
+             raise HTTPException(status_code=403, detail="Unauthorized")
+        scan = db_scan.to_dict()
+
     return {
         "scan_id":              scan_id,
         "coverage_intelligence": scan.get("coverage_intelligence", {}),
@@ -1742,40 +2448,118 @@ async def get_scan_coverage(scan_id: str):
     }
 
 
-@app.get("/api/v1/quantum/intelligence/{scan_id}")
-async def get_quantum_intelligence(scan_id: str):
-    """Quantum Command Center API — returns PQSI summary for a scan."""
-    if scan_id not in scans:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    scan = scans[scan_id]
+# ── Swarm Intelligence Endpoints ──────────────────────────────
 
-    qi = scan.get("quantum_intelligence")
-    if not qi:
-        # Fall back to scanning events for quantum_intelligence data
-        qi_events = [
-            e["data"] for e in scan.get("events", [])
-            if e.get("type") == "quantum_intelligence"
-        ]
-        qi = qi_events[-1] if qi_events else None
+@app.get("/api/v1/scan/{scan_id}/correlation")
+async def get_scan_correlation(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db)
+):
+    """Return attack chain correlation data from the swarm correlation engine."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
 
-    if not qi:
-        return {
-            "scan_id": scan_id,
-            "quantum_intelligence_available": False,
-            "message": "No PQSI modules were run for this scan",
-        }
+    if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+    else:
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if not is_super_admin and db_scan.user_id != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+    # Get live correlation data from orchestrator
+    try:
+        _SwarmOrch = None
+        try:
+            from backend.intelligence_nodes import get_swarm_orchestrator
+            _SwarmOrch = get_swarm_orchestrator
+        except ImportError:
+            from intelligence_nodes import get_swarm_orchestrator
+            _SwarmOrch = get_swarm_orchestrator
+
+        orch = _SwarmOrch()
+        correlation_data = orch.get_correlation_data()
+    except Exception:
+        correlation_data = {}
+
+    # Merge with stored scan data
+    scan_data = scans.get(scan_id, {})
+    return {
+        "scan_id":        scan_id,
+        "attack_chains":  correlation_data.get("chains", scan_data.get("attack_chains", [])),
+        "chain_count":    len(correlation_data.get("chains", scan_data.get("attack_chains", []))),
+        "groups":         correlation_data.get("groups", 0),
+        "risk_amplified": scan_data.get("risk_score", 0),
+    }
+
+
+@app.get("/api/v1/swarm/learning")
+async def get_swarm_learning(
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
+    """Return swarm learning engine insights and heuristic updates."""
+    is_super_admin = subscription.get("is_super_admin", False)
+    tier = subscription.get("tier", "free")
+
+    if tier not in ("pro", "elite", "enterprise") and not is_super_admin:
+        raise HTTPException(status_code=403, detail="Learning insights require Pro+ subscription")
+
+    try:
+        _SwarmOrch = None
+        try:
+            from backend.intelligence_nodes import get_swarm_orchestrator
+            _SwarmOrch = get_swarm_orchestrator
+        except ImportError:
+            from intelligence_nodes import get_swarm_orchestrator
+            _SwarmOrch = get_swarm_orchestrator
+
+        orch = _SwarmOrch()
+        insights = orch.get_learning_insights()
+    except Exception:
+        insights = {}
 
     return {
-        "scan_id": scan_id,
-        "quantum_intelligence_available": True,
-        "quantum_risk_score": qi.get("qqsi_score", 0),
-        "qqsi_grade": qi.get("qqsi_grade", "N/A"),
-        "pqc_adoption_index": qi.get("pqc_adoption_index", 0),
-        "hndl_exposure": qi.get("hndl_findings_count", 0),
-        "quantum_recon_detected": qi.get("quantum_recon_detected", False),
-        "migration_priority": qi.get("migration_priority", "unknown"),
-        "components": qi.get("components", {}),
-        "exposure_summary": qi.get("exposure_summary", {}),
+        "learning_insights": insights,
+        "engine_active":     bool(insights),
+    }
+
+
+@app.get("/api/v1/scan/{scan_id}/swarm-telemetry")
+async def get_swarm_telemetry(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db)
+):
+    """Return swarm agent telemetry for a specific scan."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+    else:
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if not is_super_admin and db_scan.user_id != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+    scan_data = scans.get(scan_id, {})
+    swarm_meta = scan_data.get("swarm_metadata", {})
+
+    return {
+        "scan_id":         scan_id,
+        "agents":          swarm_meta.get("agents", []),
+        "agent_count":     swarm_meta.get("agent_count", 0),
+        "phases_completed": swarm_meta.get("phases_completed", []),
+        "message_bus_stats": swarm_meta.get("message_bus_stats", {}),
+        "evolution_stats": swarm_meta.get("evolution_stats", {}),
+        "correlation_summary": swarm_meta.get("correlation_summary", {}),
     }
 
 
@@ -1791,8 +2575,14 @@ async def list_history(
 ):
     """List all scans for the current user from SQL DB."""
     local_user_id = subscription.get("local_user_id")
-    
-    query = db.query(Scan).filter(Scan.user_id == local_user_id)
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if not local_user_id and not is_super_admin:
+        return {"scans": [], "total": 0, "limit": limit, "offset": offset}
+
+    query = db.query(Scan)
+    if not is_super_admin:
+        query = query.filter(Scan.user_id == local_user_id)
     if status:
         status_filter = status.split(",")
         query = query.filter(Scan.status.in_(status_filter))
@@ -1814,7 +2604,7 @@ async def list_history(
                 "started_at": s.started_at.isoformat() if s.started_at else s.created_at.isoformat(),
                 "completed_at": s.completed_at.isoformat() if s.completed_at else None,
                 "duration": s.duration,
-                "risk_score": 100,
+                "risk_score": s.risk_score if s.risk_score is not None else 100.0,
             }
             for s in db_scans
         ],
@@ -1972,7 +2762,10 @@ async def get_usage(subscription: Dict[str, Any] = Depends(get_user_subscription
 
 @app.post("/api/v1/debug/reset-usage")
 async def reset_usage(subscription: Dict[str, Any] = Depends(get_user_subscription)):
-    """Emergency reset for scan usage (Developer Tool)."""
+    """Emergency reset for scan usage (Admin-only Developer Tool)."""
+    is_super_admin = subscription.get("is_super_admin", False)
+    if not is_super_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     uid = subscription.get("uid")
     user_ref = firestore_db.collection("users").document(uid)
     user_ref.update({"scansUsedThisMonth": 0})
@@ -2016,6 +2809,14 @@ async def stripe_webhook(request: Request):
     signature = request.headers.get("stripe-signature", "")
     result = billing_service.handle_webhook(payload, signature)
     return result
+
+
+# Mount admin_api router (dashboard stats, recent activity, user management, security events)
+try:
+    from backend.admin_api import router as admin_router
+    app.include_router(admin_router)
+except ImportError:
+    print("WARNING: admin_api module not available, admin dashboard endpoints disabled")
 
 
 @app.get("/api/v1/admin/billing/revenue")
@@ -2095,12 +2896,29 @@ async def admin_get_users(firebase_user: Dict[str, Any] = Depends(get_current_fi
 from backend.report_generator import report_generator
 
 @app.get("/api/v1/scan/{scan_id}/download")
-async def download_scan_report(scan_id: str, format: str = "json"):
+async def download_scan_report(
+    scan_id: str,
+    format: str = "json",
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+    db: Session = Depends(get_db),
+):
     """Download scan report in specified format (json, html, pdf)."""
-    if scan_id not in scans:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    
-    scan = scans[scan_id]
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    if scan_id in scans:
+        scan = scans[scan_id]
+        if not is_super_admin and scan.get("user_id") != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+    else:
+        db_scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if not db_scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if not is_super_admin and db_scan.user_id != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+        scan = db_scan.to_dict()
+        findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()
+        scan["findings"] = [f.to_dict() for f in findings]
     
     # Prepare scan data
     report_data = {
@@ -2157,8 +2975,14 @@ class CreateTokenRequest(BaseModel):
     scopes: list[str] = ["read", "scan"]
 
 @app.post("/api/v1/tokens")
-async def create_api_token(request: CreateTokenRequest, user_id: str = "current"):
+async def create_api_token(
+    request: CreateTokenRequest,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Create a new API token for CI/CD integration."""
+    user_id = str(subscription.get("local_user_id", ""))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     token_id, plain_token = token_manager.create_token(user_id, request.name, request.scopes)
     return {
         "token_id": token_id,
@@ -2169,14 +2993,23 @@ async def create_api_token(request: CreateTokenRequest, user_id: str = "current"
     }
 
 @app.get("/api/v1/tokens")
-async def list_api_tokens(user_id: str = "current"):
+async def list_api_tokens(subscription: Dict[str, Any] = Depends(get_user_subscription)):
     """List all API tokens for the user."""
+    user_id = str(subscription.get("local_user_id", ""))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     tokens = token_manager.list_tokens(user_id)
     return {"tokens": [t.dict() for t in tokens]}
 
 @app.delete("/api/v1/tokens/{token_id}")
-async def revoke_api_token(token_id: str, user_id: str = "current"):
+async def revoke_api_token(
+    token_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Revoke an API token."""
+    user_id = str(subscription.get("local_user_id", ""))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     success = token_manager.revoke_token(user_id, token_id)
     if not success:
         raise HTTPException(status_code=404, detail="Token not found")
@@ -2216,6 +3049,30 @@ async def ci_scan_trigger(
     
     valid_modules = [m for m in requested_modules if m in MODULE_REGISTRY]
     
+    ci_user_id = token_data.get("user_id")
+
+    # Persist to SQL DB
+    db = get_db_session()
+    try:
+        new_db_scan = Scan(
+            scan_id=scan_id,
+            user_id=int(ci_user_id) if ci_user_id and ci_user_id.isdigit() else None,
+            target=request.target,
+            scan_type=request.scan_type,
+            modules=valid_modules,
+            status="initializing",
+            progress=0,
+            modules_total=len(valid_modules),
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(new_db_scan)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"CI scan DB persist error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
     scans[scan_id] = {
         "scan_id": scan_id,
         "target": request.target,
@@ -2225,13 +3082,29 @@ async def ci_scan_trigger(
         "progress": 0,
         "findings": [],
         "logs": [],
+        "events": [],
+        "module_results": {},
+        "severity_counts": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+        "owasp_coverage": {},
+        "risk_score": 0,
         "started_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+        "duration": 0,
+        "cancelled": False,
+        "active_module": None,
+        "modules_completed": 0,
+        "modules_total": len(valid_modules),
+        "total_findings_count": 0,
+        "total_patterns": sum(MODULE_REGISTRY[m]["pattern_count"] for m in valid_modules),
         "ci_triggered": True,
-        "triggered_by": token_data.get("user_id"),
+        "user_id": int(ci_user_id) if ci_user_id and ci_user_id.isdigit() else None,
+        "dedup_set": set(),
+        "dedup_skipped": 0,
+        "_last_event_time": time.monotonic(),
+        "_events_base_offset": 0,
     }
-    
+
     # Start scan in background
-    import asyncio
     asyncio.create_task(execute_scan(scan_id, request.target, request.scan_type, valid_modules))
     
     return {
@@ -2253,7 +3126,10 @@ class AIAnalysisRequest(BaseModel):
     finding: dict
 
 @app.post("/api/v1/ai/analyze")
-async def ai_analyze_finding(request: AIAnalysisRequest):
+async def ai_analyze_finding(
+    request: AIAnalysisRequest,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Get AI-powered analysis and remediation for a finding."""
     analysis = ai_service.analyze_finding(request.finding)
     return {
@@ -2283,7 +3159,10 @@ async def ai_chat_assistant(
     }
 
 @app.post("/api/v1/ai/prioritize")
-async def ai_prioritize_findings(findings: list[dict]):
+async def ai_prioritize_findings(
+    findings: list[dict],
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """AI-powered risk prioritization."""
     prioritized = ai_service.prioritize_risks(findings)
     return {
@@ -2303,7 +3182,11 @@ class PocFixRequest(BaseModel):
 
 
 @app.post("/api/v1/ai/poc-fix")
-async def ai_poc_fix(request: PocFixRequest, req: Request):
+async def ai_poc_fix(
+    request: PocFixRequest,
+    req: Request,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """
     Generate comprehensive POC fix intelligence for the scanner POC verification panel.
 
@@ -2449,7 +3332,11 @@ class POCExecuteRequest(BaseModel):
 
 
 @app.post("/api/poc/execute")
-async def poc_execute(request: POCExecuteRequest, req: Request):
+async def poc_execute(
+    request: POCExecuteRequest,
+    req: Request,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """
     Real HTTP POC execution proxy.
 
@@ -2483,7 +3370,7 @@ async def poc_execute(request: POCExecuteRequest, req: Request):
 
     # Build execution headers
     exec_headers = {
-        "User-Agent": "QuantumScanner/5.0 (Authorized Security Research)",
+        "User-Agent": "QuantaraScanner/5.0 (Authorized Security Research)",
         "Accept": "application/json, text/html, */*",
     }
     for k, v in request.headers.items():
@@ -2575,16 +3462,25 @@ async def poc_execute(request: POCExecuteRequest, req: Request):
 
 
 @app.get("/api/poc/secrets/{scan_id}")
-async def poc_get_secrets(scan_id: str):
+async def poc_get_secrets(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """
     Return secrets discovered in a scan's findings.
 
     Extracts credentials, API keys, tokens, and other sensitive data
     from scanner findings using pattern matching and key-value extraction.
     """
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
     scan = scans.get(scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+
+    if not is_super_admin and scan.get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
     kv_re = _re.compile(r'([A-Za-z_][A-Za-z0-9_]{2,})\s*[=:]\s*[\'"]?([^\s\'"<>,;]{6,64})')
     skip_keys = {"class", "type", "name", "href", "src", "id", "ref", "for",
@@ -2775,8 +3671,13 @@ async def get_terms_status(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/v1/compliance/owasp")
-async def get_owasp_compliance():
-    """Get OWASP Top 10 compliance scorecard."""
+async def get_owasp_compliance(
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
+    """Get OWASP Top 10 compliance scorecard for the current user's scans."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
     owasp_categories = {
         "A01:2025": {"name": "Broken Access Control", "count": 0, "status": "compliant"},
         "A02:2025": {"name": "Cryptographic Failures", "count": 0, "status": "compliant"},
@@ -2789,11 +3690,12 @@ async def get_owasp_compliance():
         "A09:2025": {"name": "Logging Failures", "count": 0, "status": "compliant"},
         "A10:2025": {"name": "SSRF", "count": 0, "status": "compliant"},
     }
-    
-    # Aggregate from all scans
+
+    # Aggregate from this user's scans only
     all_findings = []
     for scan in scans.values():
-        all_findings.extend(scan.get("findings", []))
+        if is_super_admin or scan.get("user_id") == local_user_id:
+            all_findings.extend(scan.get("findings", []))
     
     for finding in all_findings:
         owasp = finding.get("owasp", "")
@@ -2824,37 +3726,49 @@ async def get_owasp_compliance():
 from backend.websocket_manager import ws_manager
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, user_id: str = "anonymous"):
-    """WebSocket endpoint for real-time updates."""
+async def websocket_endpoint(websocket: WebSocket, token: str = ""):
+    """WebSocket endpoint for real-time updates (authenticated)."""
+    # Authenticate via token query param
+    user_id = "anonymous"
+    local_user_id = None
+    if token:
+        try:
+            from backend.auth import decode_token
+            payload = decode_token(token)
+            if payload:
+                user_id = payload.get("uid", payload.get("sub", "anonymous"))
+                local_user_id = payload.get("local_user_id")
+        except Exception:
+            pass
+
+    await websocket.accept()
+    if not local_user_id:
+        await websocket.send_json({"type": "error", "message": "Authentication required"})
+        await websocket.close(code=4001)
+        return
+
     connection_id = await ws_manager.connect(websocket, user_id)
-    
+
     try:
         while True:
-            # Receive message from client
             data = await websocket.receive_json()
-            
-            # Handle different message types
             msg_type = data.get("type")
-            
+
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong", "timestamp": datetime.now(timezone.utc).isoformat()})
-            
+
             elif msg_type == "subscribe_scan":
                 scan_id = data.get("scan_id")
+                # Verify scan ownership
+                if scan_id in scans and scans[scan_id].get("user_id") != local_user_id:
+                    await websocket.send_json({"type": "error", "message": "Unauthorized scan access"})
+                    continue
                 await websocket.send_json({
                     "type": "subscribed",
                     "scan_id": scan_id,
                     "message": f"Subscribed to updates for scan {scan_id}"
                 })
-            
-            elif msg_type == "broadcast":
-                # Broadcast to all connected clients
-                await ws_manager.broadcast({
-                    "type": "broadcast",
-                    "from": user_id,
-                    "message": data.get("message", "")
-                })
-    
+
     except Exception as e:
         print(f"WebSocket error: {e}")
     finally:
@@ -2879,8 +3793,14 @@ class CreateScheduleRequest(BaseModel):
     notify_email: Optional[str] = None
 
 @app.post("/api/v1/schedules")
-async def create_schedule(request: CreateScheduleRequest):
+async def create_schedule(
+    request: CreateScheduleRequest,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Create a scheduled scan."""
+    user_id = str(subscription.get("local_user_id", ""))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     schedule = scheduled_scan_service.create_schedule(
         name=request.name,
         target=request.target,
@@ -2890,7 +3810,8 @@ async def create_schedule(request: CreateScheduleRequest):
         scan_profile=request.scan_profile,
         day_of_week=request.day_of_week,
         day_of_month=request.day_of_month,
-        notify_email=request.notify_email
+        notify_email=request.notify_email,
+        user_id=user_id,
     )
     return {
         "schedule_id": schedule.id,
@@ -2900,8 +3821,11 @@ async def create_schedule(request: CreateScheduleRequest):
     }
 
 @app.get("/api/v1/schedules")
-async def list_schedules(user_id: str = "current"):
+async def list_schedules(subscription: Dict[str, Any] = Depends(get_user_subscription)):
     """List all scheduled scans."""
+    user_id = str(subscription.get("local_user_id", ""))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
     schedules = scheduled_scan_service.list_schedules(user_id)
     return {
         "schedules": [
@@ -2920,24 +3844,40 @@ async def list_schedules(user_id: str = "current"):
     }
 
 @app.delete("/api/v1/schedules/{schedule_id}")
-async def delete_schedule(schedule_id: str):
+async def delete_schedule(
+    schedule_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Delete a scheduled scan."""
-    success = scheduled_scan_service.delete_schedule(schedule_id)
+    user_id = str(subscription.get("local_user_id", ""))
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    success = scheduled_scan_service.delete_schedule(schedule_id, user_id=user_id)
     if not success:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"success": True, "message": "Schedule deleted"}
 
 @app.post("/api/v1/scans/compare")
-async def compare_scans(scan1_id: str, scan2_id: str):
+async def compare_scans(
+    scan1_id: str,
+    scan2_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Compare two scans and identify differences."""
-    if scan1_id not in scans or scan2_id not in scans:
-        raise HTTPException(status_code=404, detail="One or both scans not found")
-    
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+
+    for sid in (scan1_id, scan2_id):
+        if sid not in scans:
+            raise HTTPException(status_code=404, detail=f"Scan {sid} not found")
+        if not is_super_admin and scans[sid].get("user_id") != local_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
     scan1_findings = scans[scan1_id].get("findings", [])
     scan2_findings = scans[scan2_id].get("findings", [])
-    
+
     comparison = scan_comparison_service.compare_scans(scan1_findings, scan2_findings)
-    
+
     return {
         "scan1_id": scan1_id,
         "scan2_id": scan2_id,
@@ -2956,9 +3896,14 @@ async def assign_finding(
     scan_id: str,
     finding_id: str,
     assigned_to: str,
-    user_id: str = "current"
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
 ):
     """Assign a finding to a team member."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+    if scan_id in scans and not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    user_id = str(local_user_id or "")
     finding = team_collaboration.assign_finding(finding_id, scan_id, assigned_to, user_id)
     return {
         "success": True,
@@ -2973,9 +3918,14 @@ async def update_finding_status(
     finding_id: str,
     status: str,
     comment: Optional[str] = None,
-    user_id: str = "current"
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
 ):
-    """Update finding status (Open → In Progress → Fixed → Verified)."""
+    """Update finding status (Open -> In Progress -> Fixed -> Verified)."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+    if scan_id in scans and not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    user_id = str(local_user_id or "")
     finding = team_collaboration.update_finding_status(finding_id, scan_id, status, user_id, comment)
     return {
         "success": True,
@@ -2989,10 +3939,15 @@ async def add_finding_comment(
     scan_id: str,
     finding_id: str,
     content: str,
-    user_id: str = "current",
-    user_name: str = "User"
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
 ):
     """Add a comment to a finding."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+    if scan_id in scans and not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    user_id = str(local_user_id or "")
+    user_name = subscription.get("email", "User")
     comment = team_collaboration.add_comment(finding_id, scan_id, user_id, user_name, content)
     return {
         "success": True,
@@ -3001,12 +3956,20 @@ async def add_finding_comment(
     }
 
 @app.get("/api/v1/findings/{scan_id}/{finding_id}/details")
-async def get_finding_details(scan_id: str, finding_id: str):
+async def get_finding_details(
+    scan_id: str,
+    finding_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Get full finding details including comments and history."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+    if scan_id in scans and not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
     finding = team_collaboration.get_finding_details(finding_id, scan_id)
     if not finding:
         raise HTTPException(status_code=404, detail="Finding not found")
-    
+
     return {
         "finding_id": finding.finding_id,
         "scan_id": finding.scan_id,
@@ -3026,7 +3989,10 @@ async def get_finding_details(scan_id: str, finding_id: str):
     }
 
 @app.get("/api/v1/team/activity")
-async def get_team_activity(limit: int = 50):
+async def get_team_activity(
+    limit: int = 50,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Get team activity feed."""
     activities = team_collaboration.get_activity_feed(limit)
     return {"activities": activities}
@@ -3042,7 +4008,8 @@ from backend.sbom_generator import sbom_generator, SBOMFormat
 async def generate_sbom(
     dependencies: list[dict],
     format: str = "cyclonedx-json",
-    application_name: str = "Application"
+    application_name: str = "Application",
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
 ):
     """Generate SBOM from dependencies."""
     try:
@@ -3074,24 +4041,38 @@ async def generate_sbom(
 from backend.threat_modeling import threat_modeling
 
 @app.post("/api/v1/threat-model/generate")
-async def generate_threat_model(scan_id: str):
+async def generate_threat_model(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Generate STRIDE-based threat model from scan."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
     if scan_id not in scans:
         raise HTTPException(status_code=404, detail="Scan not found")
-    
+    if not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
     findings = scans[scan_id].get("findings", [])
     threat_model = threat_modeling.generate_threat_model(scan_id, findings)
-    
+
     return threat_model
 
 @app.get("/api/v1/threat-model/{scan_id}/attack-surface")
-async def get_attack_surface_diagram(scan_id: str):
+async def get_attack_surface_diagram(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """Get attack surface diagram data."""
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
+    if scan_id in scans and not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
     diagram = threat_modeling.generate_attack_surface_diagram(scan_id)
-    
+
     if "error" in diagram:
         raise HTTPException(status_code=400, detail=diagram["error"])
-    
+
     return diagram
 
 
@@ -3103,15 +4084,22 @@ from backend.neo4j_client import get_neo4j_client
 
 
 @app.post("/api/v1/graph/ingest")
-async def graph_ingest(scan_id: str):
+async def graph_ingest(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """
     Ingest all findings from a completed scan into the Neo4j graph model.
     Creates nodes for assets, services, vulnerabilities, endpoints,
     credentials, roles, impacts, and remediations.
     Computes LEADS_TO / ESCALATES_TO cross-module relationships.
     """
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
     if scan_id not in scans:
         raise HTTPException(status_code=404, detail="Scan not found")
+    if not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
     scan     = scans[scan_id]
     findings = scan.get("findings", [])
@@ -3131,7 +4119,10 @@ async def graph_ingest(scan_id: str):
 
 
 @app.get("/api/v1/graph/asset-risk-graph")
-async def get_asset_risk_graph(scan_id: str):
+async def get_asset_risk_graph(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """
     Return the full property graph for a scan (nodes + edges).
     If the scan has not been ingested yet, auto-ingests first.
@@ -3139,8 +4130,12 @@ async def get_asset_risk_graph(scan_id: str):
     Response shape:
       { nodes: [...], edges: [...], mode: "neo4j"|"memory", count: {...} }
     """
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
     if scan_id not in scans:
         raise HTTPException(status_code=404, detail="Scan not found")
+    if not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
     client = get_neo4j_client()
 
@@ -3156,7 +4151,10 @@ async def get_asset_risk_graph(scan_id: str):
 
 
 @app.get("/api/v1/graph/attack-paths")
-async def get_attack_paths(scan_id: str):
+async def get_attack_paths(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """
     Compute and return ordered attack paths for a scan.
 
@@ -3166,8 +4164,12 @@ async def get_attack_paths(scan_id: str):
     Response shape:
       { paths: [...], count: int, mode: str }
     """
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
     if scan_id not in scans:
         raise HTTPException(status_code=404, detail="Scan not found")
+    if not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
     client   = get_neo4j_client()
     findings = scans[scan_id].get("findings", [])
@@ -3184,9 +4186,12 @@ async def get_attack_paths(scan_id: str):
 
 
 @app.get("/api/v1/graph/breach-simulation")
-async def get_breach_simulation(scan_id: str):
+async def get_breach_simulation(
+    scan_id: str,
+    subscription: Dict[str, Any] = Depends(get_user_subscription),
+):
     """
-    Generate a MITRE ATT&CK–mapped breach simulation for a scan.
+    Generate a MITRE ATT&CK-mapped breach simulation for a scan.
 
     Returns attacker timeline, impact assessment, breach probability,
     and estimated dwell time based on confirmed findings.
@@ -3195,8 +4200,12 @@ async def get_breach_simulation(scan_id: str):
       { breach_probability, risk_level, attack_timeline, impact_assessment,
         attack_paths, estimated_dwell_time, mitre_techniques, findings_summary }
     """
+    local_user_id = subscription.get("local_user_id")
+    is_super_admin = subscription.get("is_super_admin", False)
     if scan_id not in scans:
         raise HTTPException(status_code=404, detail="Scan not found")
+    if not is_super_admin and scans[scan_id].get("user_id") != local_user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
 
     client   = get_neo4j_client()
     findings = scans[scan_id].get("findings", [])
@@ -3233,14 +4242,15 @@ async def get_lab_status():
     """
     import httpx
     
-    hetty_url = "http://hetty:8080"
-    mitmweb_url = "http://mitmweb:8081"
+    hetty_url = os.getenv("HETTY_URL", "http://localhost:8082")
+    mitmweb_url = os.getenv("MITMWEB_URL", "http://localhost:8083")
     
     # Health check hetty
     hetty_running = False
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
             response = await client.get(hetty_url)
+            # Hetty returns 200/302 for its UI
             hetty_running = response.status_code < 500
     except Exception:
         pass
@@ -3248,8 +4258,9 @@ async def get_lab_status():
     # Health check mitmweb
     mitmweb_running = False
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
             response = await client.get(mitmweb_url)
+            # mitmweb returns 200 for its UI
             mitmweb_running = response.status_code < 500
     except Exception:
         pass
@@ -3271,9 +4282,21 @@ async def download_hetty_ca():
     """
     Download the Hetty CA certificate for proxy SSL interception.
     """
-    ca_path = "/root/.hetty/ca.crt"
+    # If running on host (dev), look in user home. If in docker, look in /root/
+    ca_path = os.getenv("HETTY_CA_PATH", os.path.expanduser("~/.hetty/hetty_cert.pem"))
+    
+    # Also check local project folder (bind mount on host)
     if not os.path.exists(ca_path):
-        raise HTTPException(status_code=404, detail="Hetty CA certificate not found")
+        local_path = os.path.join(os.getcwd(), ".hetty_data", "hetty_cert.pem")
+        if os.path.exists(local_path):
+            ca_path = local_path
+            
+    if not os.path.exists(ca_path):
+        # Re-check in /root/ as fallback for Docker env
+        ca_path = "/root/.hetty/hetty_cert.pem"
+        
+    if not os.path.exists(ca_path):
+        raise HTTPException(status_code=404, detail="Hetty CA certificate not found. Start Hetty first.")
     
     return FileResponse(
         path=ca_path,
@@ -3287,15 +4310,855 @@ async def download_mitmproxy_ca():
     """
     Download the mitmproxy CA certificate for proxy SSL interception.
     """
-    ca_path = "/root/.mitmproxy/mitmproxy-ca-cert.pem"
+    # mitmproxy CA is usually in ~/.mitmproxy/
+    ca_path = os.getenv("MITMPROXY_CA_PATH", os.path.expanduser("~/.mitmproxy/mitmproxy-ca-cert.pem"))
+    
+    # Also check local project folder
     if not os.path.exists(ca_path):
-        raise HTTPException(status_code=404, detail="mitmproxy CA certificate not found")
+        local_path = os.path.join(os.getcwd(), ".mitmproxy_data", "mitmproxy-ca-cert.pem")
+        if os.path.exists(local_path):
+            ca_path = local_path
+            
+    if not os.path.exists(ca_path):
+        # Fallback for Docker
+        ca_path = "/root/.mitmproxy/mitmproxy-ca-cert.pem"
+
+    if not os.path.exists(ca_path):
+        raise HTTPException(status_code=404, detail="mitmproxy CA certificate not found. Start mitmweb first.")
     
     return FileResponse(
         path=ca_path,
         filename="mitmproxy-ca-cert.pem",
-        media_type="application/x-pem-file"
+        media_type="application/x-x509-ca-cert"
     )
+
+# NOTE: Duplicate /api/v1/scan/{scan_id}/neo-intelligence and /api/v1/neo-intelligence/*
+# routes removed — canonical versions with auth are defined earlier in this file.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hetty HTTP Testing Toolkit — Native Manual Pentesting API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_HETTY_HISTORY: list = []  # In-memory request history (per-process)
+_HETTY_MAX_HISTORY = 500
+
+# Vulnerability signature patterns for auto-detection on HTTP responses
+_VULN_SIGNATURES = [
+    # SQL Injection
+    {"type": "SQL Injection", "patterns": [
+        r"SQL syntax.*?MySQL", r"Warning.*?\Wmysqli?_", r"PostgreSQL.*?ERROR",
+        r"ORA-\d{5}", r"Microsoft.*?ODBC.*?SQL Server", r"Unclosed quotation mark",
+        r"quoted string not properly terminated", r"syntax error at or near",
+        r"com\.mysql\.jdbc", r"SQLite3::query", r"pg_query\(\): ERROR",
+    ], "confidence_base": 0.9},
+    # XSS
+    {"type": "Reflected XSS", "patterns": [
+        r"<script[^>]*>.*?alert\s*\(", r"<img[^>]+onerror\s*=",
+        r"<svg[^>]+onload\s*=", r"javascript\s*:", r"on\w+\s*=\s*[\"']",
+    ], "confidence_base": 0.85},
+    # Command Injection
+    {"type": "Command Injection", "patterns": [
+        r"uid=\d+\([\w]+\)\s+gid=", r"root:x:0:0:", r"Windows IP Configuration",
+        r"Directory of [A-Z]:\\", r"\bdrwxr[x-]", r"total \d+\s+",
+    ], "confidence_base": 0.92},
+    # SSRF indicators
+    {"type": "SSRF", "patterns": [
+        r"\"hostname\":\s*\"(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01]))",
+        r"Connection refused.*?(127\.0\.0\.1|localhost)",
+    ], "confidence_base": 0.8},
+    # LFI / Path Traversal
+    {"type": "LFI / Path Traversal", "patterns": [
+        r"root:x:0:0:root:", r"\[boot loader\]", r"\[operating systems\]",
+        r"<\?php", r"#!/(usr/)?bin/(ba)?sh",
+    ], "confidence_base": 0.88},
+    # Open Redirect
+    {"type": "Open Redirect", "patterns": [
+        r"<meta\s+http-equiv=[\"']refresh[\"'].*?url=https?://",
+        r"location:\s*https?://(?!(?:localhost|127\.0\.0\.1))",
+    ], "confidence_base": 0.75},
+    # Auth Bypass
+    {"type": "Authentication Bypass", "patterns": [
+        r"\"authenticated\":\s*true", r"\"role\":\s*\"admin\"",
+        r"\"is_admin\":\s*true", r"admin_token",
+    ], "confidence_base": 0.7},
+    # Misconfigured Headers
+    {"type": "Security Header Misconfiguration", "patterns": [
+        r"access-control-allow-origin:\s*\*",
+    ], "confidence_base": 0.65},
+]
+
+
+def _analyze_response_vulnerabilities(
+    status_code: int, headers: dict, body: str, request_payload: str = ""
+) -> list:
+    """Auto-detect potential vulnerabilities in an HTTP response."""
+    vulns = []
+    combined = body + "\n" + "\n".join(f"{k}: {v}" for k, v in headers.items())
+
+    for sig in _VULN_SIGNATURES:
+        for pat in sig["patterns"]:
+            try:
+                match = _re.search(pat, combined, _re.IGNORECASE)
+                if match:
+                    evidence = match.group(0)[:200]
+                    vulns.append({
+                        "type": sig["type"],
+                        "confidence": sig["confidence_base"],
+                        "evidence": evidence,
+                        "location": "response_body" if match.group(0) in body else "response_header",
+                    })
+                    break  # One match per signature type
+            except Exception:
+                pass
+
+    # Check missing security headers
+    important_headers = {
+        "x-frame-options": "Missing X-Frame-Options header",
+        "x-content-type-options": "Missing X-Content-Type-Options header",
+        "strict-transport-security": "Missing HSTS header",
+        "content-security-policy": "Missing Content-Security-Policy header",
+    }
+    lower_headers = {k.lower(): v for k, v in headers.items()}
+    for hdr, msg in important_headers.items():
+        if hdr not in lower_headers:
+            vulns.append({
+                "type": "Security Header Misconfiguration",
+                "confidence": 0.5,
+                "evidence": msg,
+                "location": "response_header",
+            })
+
+    return vulns
+
+
+class HettySendRequest(BaseModel):
+    method: str = "GET"
+    url: str
+    headers: dict = {}
+    cookies: dict = {}
+    params: dict = {}
+    body: str = ""
+    timeout: int = 25
+    follow_redirects: bool = True
+    auto_detect_vulns: bool = True
+
+
+class HettyReplayRequest(BaseModel):
+    original_id: str
+    method: Optional[str] = None
+    url: Optional[str] = None
+    headers: Optional[dict] = None
+    cookies: Optional[dict] = None
+    body: Optional[str] = None
+
+
+@app.post("/api/hetty/send-request")
+async def hetty_send_request(
+    request: HettySendRequest,
+    req: Request,
+):
+    """
+    Full HTTP request proxy for manual pentesting.
+    Sends request, captures full telemetry, auto-detects vulnerabilities.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return {"success": False, "error": "httpx not installed"}
+
+    # Rate limiting
+    now = _time_mod.time()
+    rate_key = "hetty_" + (req.client.host if req.client else "anon")
+    bucket = _POC_RATE_LIMIT.setdefault(rate_key, [])
+    bucket[:] = [t for t in bucket if now - t < 60]
+    if len(bucket) >= 30:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded (30/min)")
+    bucket.append(now)
+
+    # SSRF protection
+    safe, reason = _is_ssrf_safe(request.url)
+    if not safe:
+        return {"success": False, "error": reason, "blocked": True}
+
+    method = request.method.upper()
+    if method not in {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"}:
+        raise HTTPException(status_code=400, detail=f"Method '{method}' not permitted")
+
+    # Build headers
+    exec_headers = {
+        "User-Agent": "QuantaraScanner/5.0 (Manual Pentest)",
+        "Accept": "*/*",
+    }
+    for k, v in request.headers.items():
+        if k.lower() not in ("host", "content-length"):
+            exec_headers[k] = v
+
+    # Add cookies
+    cookie_str = "; ".join(f"{k}={v}" for k, v in request.cookies.items())
+    if cookie_str:
+        exec_headers["Cookie"] = cookie_str
+
+    # Add query params to URL
+    target_url = request.url
+    if request.params:
+        from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+        parsed = urlparse(target_url)
+        existing = parse_qs(parsed.query)
+        existing.update({k: [v] for k, v in request.params.items()})
+        new_query = urlencode(existing, doseq=True)
+        target_url = urlunparse(parsed._replace(query=new_query))
+
+    request_id = str(uuid.uuid4())[:12]
+    start_ts = _time_mod.time()
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(float(min(request.timeout, 60)), connect=10.0),
+            follow_redirects=request.follow_redirects,
+            verify=False,
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+        ) as client:
+            kw: dict = {"method": method, "url": target_url, "headers": exec_headers}
+            if request.body and method in ("POST", "PUT", "PATCH"):
+                kw["content"] = request.body.encode("utf-8", errors="replace")
+
+            response = await client.request(**kw)
+            elapsed_ms = int((_time_mod.time() - start_ts) * 1000)
+
+            try:
+                body_raw = response.text[:100000]
+            except Exception:
+                body_raw = "<binary or undecodable response>"
+
+            body_pretty = body_raw
+            try:
+                body_pretty = json.dumps(json.loads(body_raw), indent=2)
+            except Exception:
+                pass
+
+            resp_headers = dict(response.headers)
+            content_length = len(body_raw)
+
+            # Detect secrets
+            detected_secrets = _detect_response_secrets(body_raw)
+
+            # Info disclosure headers
+            info_headers = ["server", "x-powered-by", "x-aspnet-version",
+                            "x-aspnetmvc-version", "x-generator", "x-drupal-cache"]
+            disclosed = [h for h in info_headers if h in resp_headers]
+
+            # Auto vulnerability detection
+            detected_vulns = []
+            if request.auto_detect_vulns:
+                detected_vulns = _analyze_response_vulnerabilities(
+                    response.status_code, resp_headers, body_raw, request.body
+                )
+
+            # Parse response cookies
+            resp_cookies = {}
+            for cookie_header in response.headers.get_list("set-cookie"):
+                parts = cookie_header.split("=", 1)
+                if len(parts) == 2:
+                    name = parts[0].strip()
+                    value = parts[1].split(";")[0].strip()
+                    resp_cookies[name] = {
+                        "value": value,
+                        "raw": cookie_header,
+                        "secure": "secure" in cookie_header.lower(),
+                        "httponly": "httponly" in cookie_header.lower(),
+                        "samesite": "samesite" in cookie_header.lower(),
+                    }
+
+            result = {
+                "success": True,
+                "id": request_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "request": {
+                    "method": method,
+                    "url": target_url,
+                    "headers": exec_headers,
+                    "cookies": request.cookies,
+                    "body": request.body if method in ("POST", "PUT", "PATCH") else "",
+                },
+                "response": {
+                    "status_code": response.status_code,
+                    "status_text": response.reason_phrase or "",
+                    "headers": resp_headers,
+                    "cookies": resp_cookies,
+                    "body_raw": body_raw,
+                    "body_pretty": body_pretty,
+                    "content_type": resp_headers.get("content-type", "unknown"),
+                    "content_length": content_length,
+                    "server": resp_headers.get("server", ""),
+                },
+                "timing": {
+                    "total_ms": elapsed_ms,
+                    "redirect_count": len(response.history),
+                    "final_url": str(response.url),
+                },
+                "security": {
+                    "tls": request.url.startswith("https://"),
+                    "secrets_detected": detected_secrets,
+                    "disclosed_headers": disclosed,
+                    "vulnerabilities_detected": detected_vulns,
+                },
+            }
+
+            # Store in history
+            history_entry = {
+                "id": request_id,
+                "timestamp": result["timestamp"],
+                "method": method,
+                "url": target_url,
+                "status_code": response.status_code,
+                "response_time_ms": elapsed_ms,
+                "content_length": content_length,
+                "vulns_count": len(detected_vulns),
+                "secrets_count": len(detected_secrets),
+            }
+            _HETTY_HISTORY.insert(0, history_entry)
+            if len(_HETTY_HISTORY) > _HETTY_MAX_HISTORY:
+                _HETTY_HISTORY[:] = _HETTY_HISTORY[:_HETTY_MAX_HISTORY]
+
+            # Store full result for replay
+            history_entry["_full"] = result
+
+            return result
+
+    except Exception as exc:
+        elapsed_ms = int((_time_mod.time() - start_ts) * 1000)
+        exc_name = type(exc).__name__
+        if "Timeout" in exc_name:
+            return {"success": False, "id": request_id, "error": "Request timed out", "timing": {"total_ms": elapsed_ms}}
+        if "Connect" in exc_name:
+            return {"success": False, "id": request_id, "error": f"Connection failed: {str(exc)[:300]}", "timing": {"total_ms": elapsed_ms}}
+        return {"success": False, "id": request_id, "error": str(exc)[:500], "timing": {"total_ms": elapsed_ms}}
+
+
+@app.post("/api/hetty/replay")
+async def hetty_replay(
+    request: HettyReplayRequest,
+    req: Request,
+):
+    """Replay a previous request with optional modifications for comparison."""
+    # Find original request in history
+    original = None
+    for entry in _HETTY_HISTORY:
+        if entry["id"] == request.original_id and "_full" in entry:
+            original = entry["_full"]
+            break
+
+    if not original:
+        raise HTTPException(status_code=404, detail="Original request not found in history")
+
+    orig_req = original["request"]
+    replay = HettySendRequest(
+        method=request.method or orig_req["method"],
+        url=request.url or orig_req["url"],
+        headers=request.headers if request.headers is not None else orig_req.get("headers", {}),
+        cookies=request.cookies if request.cookies is not None else orig_req.get("cookies", {}),
+        body=request.body if request.body is not None else orig_req.get("body", ""),
+    )
+    new_result = await hetty_send_request(replay, req)
+
+    # Build comparison
+    if new_result.get("success") and original.get("success"):
+        orig_resp = original["response"]
+        new_resp = new_result.get("response", {})
+        comparison = {
+            "status_changed": orig_resp["status_code"] != new_resp.get("status_code"),
+            "original_status": orig_resp["status_code"],
+            "replay_status": new_resp.get("status_code"),
+            "length_diff": new_resp.get("content_length", 0) - orig_resp.get("content_length", 0),
+            "time_diff_ms": new_result.get("timing", {}).get("total_ms", 0) - original.get("timing", {}).get("total_ms", 0),
+            "new_vulns": len(new_result.get("security", {}).get("vulnerabilities_detected", [])),
+            "original_vulns": len(original.get("security", {}).get("vulnerabilities_detected", [])),
+            "body_changed": orig_resp.get("body_raw", "")[:5000] != new_resp.get("body_raw", "")[:5000],
+        }
+        new_result["comparison"] = comparison
+
+    new_result["replay_of"] = request.original_id
+    return new_result
+
+
+@app.post("/api/hetty/analyze-response")
+async def hetty_analyze_response(
+    req: Request,
+):
+    """Analyze a raw HTTP response for vulnerabilities without sending a new request."""
+    body = await req.json()
+    status_code = body.get("status_code", 200)
+    headers = body.get("headers", {})
+    response_body = body.get("body", "")
+    request_payload = body.get("request_payload", "")
+
+    vulns = _analyze_response_vulnerabilities(status_code, headers, response_body, request_payload)
+    secrets = _detect_response_secrets(response_body)
+
+    info_headers = ["server", "x-powered-by", "x-aspnet-version",
+                    "x-aspnetmvc-version", "x-generator"]
+    disclosed = [h for h in info_headers if h.lower() in {k.lower() for k in headers}]
+
+    return {
+        "vulnerabilities": vulns,
+        "secrets": secrets,
+        "disclosed_headers": disclosed,
+        "risk_score": min(100, sum(v["confidence"] * 100 for v in vulns)),
+        "total_issues": len(vulns) + len(secrets) + len(disclosed),
+    }
+
+
+@app.get("/api/hetty/history")
+async def hetty_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Return request history for the Hetty testing toolkit."""
+    # Strip _full from history entries to keep response light
+    items = []
+    for entry in _HETTY_HISTORY[offset:offset + limit]:
+        items.append({k: v for k, v in entry.items() if k != "_full"})
+    return {
+        "items": items,
+        "total": len(_HETTY_HISTORY),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.delete("/api/hetty/history")
+async def hetty_clear_history():
+    """Clear Hetty request history."""
+    count = len(_HETTY_HISTORY)
+    _HETTY_HISTORY.clear()
+    return {"cleared": count}
+
+
+@app.get("/api/hetty/history/{request_id}")
+async def hetty_history_detail(request_id: str):
+    """Get full details for a specific request from history."""
+    for entry in _HETTY_HISTORY:
+        if entry["id"] == request_id and "_full" in entry:
+            return entry["_full"]
+    raise HTTPException(status_code=404, detail="Request not found in history")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI Attack Console Endpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+
+try:
+    from backend.ai_attack_engine import (
+        AttackSurfaceAnalyzer, PayloadGenerator, AdaptiveFuzzer,
+        ResponseIntelligenceEngine, VulnConfirmationEngine,
+        AttackMemoryStore, AttackGraphBuilder, ai_analyze_request,
+    )
+    _AI_ATTACK_ENGINE_AVAILABLE = True
+except ImportError:
+    try:
+        from ai_attack_engine import (
+            AttackSurfaceAnalyzer, PayloadGenerator, AdaptiveFuzzer,
+            ResponseIntelligenceEngine, VulnConfirmationEngine,
+            AttackMemoryStore, AttackGraphBuilder, ai_analyze_request,
+        )
+        _AI_ATTACK_ENGINE_AVAILABLE = True
+    except ImportError:
+        _AI_ATTACK_ENGINE_AVAILABLE = False
+
+# In-memory fuzzing session store
+_FUZZ_SESSIONS: dict = {}
+_ATTACK_DASHBOARD_STATS: dict = {
+    "requests_sent": 0,
+    "payloads_tested": 0,
+    "potential_vulns": 0,
+    "confirmed_vulns": 0,
+    "active_fuzz_sessions": 0,
+}
+
+
+@app.post("/api/hetty/ai/analyze")
+async def hetty_ai_analyze(req: Request):
+    """AI-powered attack surface analysis of an HTTP request."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    body = await req.json()
+    method = body.get("method", "GET")
+    url = body.get("url", "")
+    headers = body.get("headers", {})
+    cookies = body.get("cookies", {})
+    request_body = body.get("body", "")
+    params = body.get("params", {})
+
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    result = ai_analyze_request(method, url, headers, cookies, request_body, params)
+
+    # Store intelligence
+    try:
+        from urllib.parse import urlparse as _urlparse
+        host = _urlparse(url).hostname or url
+        AttackMemoryStore.save(host, {
+            "endpoints": [url],
+            "technologies": [],
+        })
+    except Exception:
+        pass
+
+    return {"success": True, **result}
+
+
+@app.post("/api/hetty/ai/payloads")
+async def hetty_ai_payloads(req: Request):
+    """Generate context-aware payloads for a specific vulnerability type."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    body = await req.json()
+    vuln_type = body.get("vuln_type", "sqli")
+    current_value = body.get("current_value", "")
+    location = body.get("location", "param")
+    parameter_name = body.get("parameter", "")
+
+    payloads = PayloadGenerator.generate_ai_payloads(vuln_type, {
+        "current_value": current_value,
+        "location": location,
+        "parameter": parameter_name,
+    })
+
+    _ATTACK_DASHBOARD_STATS["payloads_tested"] += len(payloads)
+
+    return {
+        "success": True,
+        "vuln_type": vuln_type,
+        "payloads": payloads,
+        "total": len(payloads),
+    }
+
+
+@app.post("/api/hetty/ai/fuzz")
+async def hetty_ai_fuzz(req: Request):
+    """Run adaptive fuzzing on a target request."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    try:
+        import httpx
+    except ImportError:
+        raise HTTPException(status_code=501, detail="httpx not installed")
+
+    body = await req.json()
+    target_url = body.get("url", "")
+    method = body.get("method", "GET").upper()
+    headers = body.get("headers", {})
+    cookies = body.get("cookies", {})
+    params = body.get("params", {})
+    request_body = body.get("body", "")
+    target_param = body.get("target_param", "")
+    target_location = body.get("target_location", "param")  # param, header, cookie, body
+    vuln_types = body.get("vuln_types", [])
+    max_mutations = min(body.get("max_mutations", 20), 30)
+
+    if not target_url:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    # Rate limit
+    now = _time_mod.time()
+    rate_key = "fuzz_" + (req.client.host if req.client else "anon")
+    bucket = _POC_RATE_LIMIT.setdefault(rate_key, [])
+    bucket[:] = [t for t in bucket if now - t < 60]
+    if len(bucket) >= 60:
+        raise HTTPException(status_code=429, detail="Fuzz rate limit exceeded (60/min)")
+    bucket.append(now)
+
+    # SSRF protection
+    safe, reason = _is_ssrf_safe(target_url)
+    if not safe:
+        return {"success": False, "error": reason, "blocked": True}
+
+    # Determine original value
+    original_value = ""
+    if target_location == "param":
+        original_value = params.get(target_param, "")
+    elif target_location == "header":
+        original_value = headers.get(target_param, "")
+    elif target_location == "cookie":
+        original_value = cookies.get(target_param, "")
+    elif target_location == "body":
+        original_value = request_body
+
+    # Generate mutations
+    mutations = AdaptiveFuzzer.generate_mutations(target_param, original_value, vuln_types)
+    mutations = mutations[:max_mutations]
+
+    # Send baseline request first
+    exec_headers = {"User-Agent": "QuantaraScanner/5.0 (Fuzzer)", "Accept": "*/*"}
+    for k, v in headers.items():
+        if k.lower() not in ("host", "content-length"):
+            exec_headers[k] = v
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    if cookie_str:
+        exec_headers["Cookie"] = cookie_str
+
+    session_id = str(uuid.uuid4())[:8]
+    results = []
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=5.0),
+            follow_redirects=True,
+            verify=False,
+            limits=httpx.Limits(max_connections=5, max_keepalive_connections=2),
+        ) as client:
+            # Baseline
+            from urllib.parse import urlencode as _urlencode, urlparse as _urlparse2, urlunparse as _urlunparse
+            baseline_url = target_url
+            if params:
+                parsed = _urlparse2(target_url)
+                baseline_url = _urlunparse(parsed._replace(query=_urlencode(params)))
+
+            baseline_kw: dict = {"method": method, "url": baseline_url, "headers": exec_headers}
+            if request_body and method in ("POST", "PUT", "PATCH"):
+                baseline_kw["content"] = request_body.encode("utf-8", errors="replace")
+
+            start = _time_mod.time()
+            baseline_resp = await client.request(**baseline_kw)
+            baseline_time = int((_time_mod.time() - start) * 1000)
+
+            try:
+                baseline_body = baseline_resp.text[:50000]
+            except Exception:
+                baseline_body = ""
+
+            baseline_status = baseline_resp.status_code
+            baseline_length = len(baseline_body)
+
+            # Run mutations
+            for mut in mutations:
+                try:
+                    # Apply mutation
+                    fuzz_params = dict(params)
+                    fuzz_headers = dict(exec_headers)
+                    fuzz_body = request_body
+                    fuzz_cookies = dict(cookies)
+                    mutated_value = mut["mutated"]
+
+                    if target_location == "param":
+                        fuzz_params[target_param] = mutated_value
+                    elif target_location == "header":
+                        fuzz_headers[target_param] = mutated_value
+                    elif target_location == "cookie":
+                        fuzz_cookies[target_param] = mutated_value
+                        cookie_str_fuzz = "; ".join(f"{k}={v}" for k, v in fuzz_cookies.items())
+                        fuzz_headers["Cookie"] = cookie_str_fuzz
+                    elif target_location == "body":
+                        fuzz_body = mutated_value
+
+                    fuzz_url = target_url
+                    if fuzz_params:
+                        parsed = _urlparse2(target_url)
+                        fuzz_url = _urlunparse(parsed._replace(query=_urlencode(fuzz_params)))
+
+                    kw: dict = {"method": method, "url": fuzz_url, "headers": fuzz_headers}
+                    if fuzz_body and method in ("POST", "PUT", "PATCH"):
+                        kw["content"] = fuzz_body.encode("utf-8", errors="replace")
+
+                    start = _time_mod.time()
+                    resp = await client.request(**kw)
+                    elapsed = int((_time_mod.time() - start) * 1000)
+
+                    try:
+                        resp_body = resp.text[:50000]
+                    except Exception:
+                        resp_body = ""
+
+                    # Analyze
+                    analysis = AdaptiveFuzzer.analyze_fuzz_response(
+                        baseline_status, baseline_length, baseline_time,
+                        resp.status_code, len(resp_body), elapsed,
+                        resp_body, mutated_value,
+                    )
+
+                    results.append({
+                        "mutation": mut["mutation"],
+                        "parameter": target_param,
+                        "original": mut["original"],
+                        "payload": mutated_value,
+                        "status_code": resp.status_code,
+                        "response_length": len(resp_body),
+                        "response_time_ms": elapsed,
+                        **analysis,
+                    })
+
+                    _ATTACK_DASHBOARD_STATS["requests_sent"] += 1
+                    _ATTACK_DASHBOARD_STATS["payloads_tested"] += 1
+                    if analysis["is_anomaly"]:
+                        _ATTACK_DASHBOARD_STATS["potential_vulns"] += 1
+
+                except Exception as e:
+                    results.append({
+                        "mutation": mut["mutation"],
+                        "parameter": target_param,
+                        "payload": mut["mutated"],
+                        "error": str(e)[:200],
+                        "is_anomaly": False,
+                    })
+
+    except Exception as e:
+        return {"success": False, "error": str(e)[:500], "session_id": session_id}
+
+    # Store session
+    _FUZZ_SESSIONS[session_id] = {
+        "id": session_id,
+        "target": target_url,
+        "param": target_param,
+        "started": _time_mod.time(),
+        "results": results,
+        "baseline": {
+            "status": baseline_status,
+            "length": baseline_length,
+            "time_ms": baseline_time,
+        },
+    }
+
+    anomaly_count = sum(1 for r in results if r.get("is_anomaly"))
+
+    # Save intelligence
+    try:
+        from urllib.parse import urlparse as _up
+        host = _up(target_url).hostname or target_url
+        AttackMemoryStore.save(host, {
+            "endpoints": [target_url],
+            "confirmed_vulns": [r for r in results if r.get("anomaly_score", 0) > 0.5],
+        })
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "total_mutations": len(results),
+        "anomalies_found": anomaly_count,
+        "baseline": {
+            "status": baseline_status,
+            "length": baseline_length,
+            "time_ms": baseline_time,
+        },
+        "results": results,
+    }
+
+
+@app.post("/api/hetty/ai/verify")
+async def hetty_ai_verify(req: Request):
+    """Get verification steps for a suspected vulnerability."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    body = await req.json()
+    vuln_type = body.get("vuln_type", "")
+    target_value = body.get("target_value", "")
+
+    if not vuln_type:
+        raise HTTPException(status_code=400, detail="vuln_type is required")
+
+    steps = VulnConfirmationEngine.get_verification_steps(vuln_type, target_value)
+    exploit_options = VulnConfirmationEngine.get_exploit_options(vuln_type)
+
+    return {
+        "success": True,
+        "vuln_type": vuln_type,
+        "verification_steps": steps,
+        "exploit_options": exploit_options,
+    }
+
+
+@app.post("/api/hetty/ai/response-intel")
+async def hetty_ai_response_intel(req: Request):
+    """Analyze HTTP response for security intelligence."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    body = await req.json()
+    status_code = body.get("status_code", 200)
+    headers = body.get("headers", {})
+    response_body = body.get("body", "")
+    request_body = body.get("request_body", "")
+
+    intel = ResponseIntelligenceEngine.analyze(status_code, headers, response_body, request_body)
+
+    # Save intelligence
+    try:
+        target = body.get("target_url", "")
+        if target:
+            from urllib.parse import urlparse as _up2
+            host = _up2(target).hostname or target
+            AttackMemoryStore.save(host, {
+                "database_type": intel.database_type,
+                "framework": intel.framework,
+                "technologies": [intel.framework] if intel.framework else [],
+            })
+    except Exception:
+        pass
+
+    from dataclasses import asdict as _asdict
+    return {"success": True, **_asdict(intel)}
+
+
+@app.post("/api/hetty/ai/attack-graph")
+async def hetty_ai_attack_graph(req: Request):
+    """Build attack surface graph from findings."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    body = await req.json()
+    target = body.get("target", "")
+    findings = body.get("findings", [])
+
+    if not target:
+        raise HTTPException(status_code=400, detail="target is required")
+
+    graph = AttackGraphBuilder.build(target, findings)
+    return {"success": True, **graph}
+
+
+@app.get("/api/hetty/ai/memory")
+async def hetty_ai_memory():
+    """Get stored attack intelligence for all targets."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    return {"success": True, "targets": AttackMemoryStore.get_all()}
+
+
+@app.get("/api/hetty/ai/memory/{host}")
+async def hetty_ai_memory_host(host: str):
+    """Get stored attack intelligence for a specific host."""
+    if not _AI_ATTACK_ENGINE_AVAILABLE:
+        raise HTTPException(status_code=501, detail="AI Attack Engine not available")
+
+    intel = AttackMemoryStore.get(host)
+    if not intel:
+        return {"success": True, "found": False, "host": host}
+
+    return {"success": True, "found": True, **intel}
+
+
+@app.get("/api/hetty/ai/dashboard")
+async def hetty_ai_dashboard():
+    """Get real-time attack dashboard statistics."""
+    return {
+        "success": True,
+        **_ATTACK_DASHBOARD_STATS,
+        "fuzz_sessions": len(_FUZZ_SESSIONS),
+        "targets_in_memory": len(AttackMemoryStore.get_all()) if _AI_ATTACK_ENGINE_AVAILABLE else 0,
+        "history_count": len(_HETTY_HISTORY),
+    }
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -1,5 +1,5 @@
 """
-Quantum Protocol v3.5 — Report Generators
+Quantara Security v5.0 — Report Generators
 
 Output formats with full secrets/credentials coverage:
   - JSON, SARIF 2.1, CSV, HTML Dashboard, Plain text summary
@@ -8,7 +8,7 @@ Output formats with full secrets/credentials coverage:
 from __future__ import annotations
 import csv, io, json
 from pathlib import Path
-from quantum_protocol.models.findings import ScanSummary
+from .findings import ScanSummary
 
 
 def export_json(summary: ScanSummary, indent: int = 2) -> str:
@@ -35,8 +35,8 @@ def export_summary(summary: ScanSummary) -> str:
 
     lines = [
         "", bar,
-        "   QUANTUM PROTOCOL v3.5 — Security Scan Report",
-        "   Cryptographic Vulnerabilities + Secrets & Credential Exposure",
+        "   QUANTARA SECURITY v5.0 — Security Scan Report",
+        "   Security Intelligence + Secrets & Credential Exposure",
         bar,
         f"  Scan ID          : {s.scan_id}",
         f"  Source            : {s.source}",
@@ -51,8 +51,8 @@ def export_summary(summary: ScanSummary) -> str:
         f"  High             : {s.high_count}",
         f"  Medium           : {s.medium_count}",
         f"  Low              : {s.low_count}",
-        f"  HNDL-Relevant    : {s.hndl_count}",
-        f"  PQC-Ready        : {s.pqc_ready_count}",
+        f"  Sensitive Exposure: {s.exposure_count}",
+        f"  PQC-Ready        : {s.secure_algo_count}",
     ]
 
     # ── SECRETS SECTION ──────────────────────────────────────────────
@@ -89,9 +89,9 @@ def export_summary(summary: ScanSummary) -> str:
         "  SECURITY SCORES",
         thin,
         f"  Overall Security : {s.overall_security_score:.1f}/100  {_score_tag(s.overall_security_score, high_bad=False)}",
-        f"  Quantum Risk     : {s.quantum_risk_score:.1f}/100  {_score_tag(s.quantum_risk_score)}",
+        f"  Security Risk    : {s.crypto_risk_score:.1f}/100  {_score_tag(s.crypto_risk_score)}",
         f"  Secrets Exposure : {s.secrets_exposure_score:.1f}/100  {_score_tag(s.secrets_exposure_score)}",
-        f"  Crypto Agility   : {s.crypto_agility_score:.1f}/100  {_score_tag(s.crypto_agility_score, high_bad=False)}",
+        f"  Crypto Agility   : {s.security_agility_score:.1f}/100  {_score_tag(s.security_agility_score, high_bad=False)}",
     ])
 
     # ── COMPLIANCE ───────────────────────────────────────────────────
@@ -164,15 +164,15 @@ def export_html_dashboard(summary: ScanSummary) -> str:
         compliance_html = f'<h2>Compliance Violations</h2><table><thead><tr><th>Framework</th><th>Violations</th></tr></thead><tbody>{rows}</tbody></table>'
 
     overall_class = "pq" if s.overall_security_score >= 70 else "me" if s.overall_security_score >= 40 else "cr"
-    qr_class = "cr" if s.quantum_risk_score >= 70 else "hi" if s.quantum_risk_score >= 40 else "me" if s.quantum_risk_score >= 15 else "lo"
+    qr_class = "cr" if s.crypto_risk_score >= 70 else "hi" if s.crypto_risk_score >= 40 else "me" if s.crypto_risk_score >= 15 else "lo"
     se_class = "cr" if s.secrets_exposure_score >= 70 else "hi" if s.secrets_exposure_score >= 40 else "me" if s.secrets_exposure_score >= 15 else "lo"
-    ag_class = "pq" if s.crypto_agility_score >= 70 else "me" if s.crypto_agility_score >= 40 else "cr"
+    ag_class = "pq" if s.security_agility_score >= 70 else "me" if s.security_agility_score >= 40 else "cr"
     overall_bg = "var(--pq)" if s.overall_security_score >= 70 else "var(--me)" if s.overall_security_score >= 40 else "var(--cr)"
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quantum Protocol v3.5 — Scan Report</title>
+<title>Quantara Security v5.0 — Scan Report</title>
 <style>
 :root{{--bg:#0f1117;--sf:#1a1d27;--bd:#2a2d3a;--tx:#e4e4e7;--mu:#71717a;--ac:#6366f1;
 --cr:#ef4444;--hi:#f97316;--me:#eab308;--lo:#3b82f6;--in:#6b7280;--pq:#10b981;--se:#f43f5e}}
@@ -205,7 +205,7 @@ tr:hover td{{background:#1e2130}}
 .m{{font-family:'JetBrains Mono','Fira Code',monospace;font-size:.75rem}}
 </style></head><body>
 <div class="c">
-<h1>Quantum Protocol v3.5 — Security Scan Report</h1>
+<h1>Quantara Security v5.0 — Security Scan Report</h1>
 <p class="sub">Scan ID: {s.scan_id} | Source: {s.source} | {s.duration_seconds:.1f}s | {s.files_scanned} files | {len(s.languages_detected)} languages</p>
 
 <div class="g">
@@ -214,14 +214,14 @@ tr:hover td{{background:#1e2130}}
 <div class="cd"><div class="cl">Critical</div><div class="cv cr">{s.critical_count}</div></div>
 <div class="cd"><div class="cl">High</div><div class="cv hi">{s.high_count}</div></div>
 <div class="cd"><div class="cl">Secrets Exposed</div><div class="cv se">{s.secrets_count}</div></div>
-<div class="cd"><div class="cl">HNDL Risk</div><div class="cv hi">{s.hndl_count}</div></div>
-<div class="cd"><div class="cl">PQC Ready</div><div class="cv pq">{s.pqc_ready_count}</div></div>
+<div class="cd"><div class="cl">Exposure Risk</div><div class="cv hi">{s.exposure_count}</div></div>
+<div class="cd"><div class="cl">PQC Ready</div><div class="cv pq">{s.secure_algo_count}</div></div>
 </div>
 
 <div class="g" style="grid-template-columns:repeat(4,1fr)">
-<div class="cd"><div class="cl">Quantum Risk</div><div class="cv {qr_class}">{s.quantum_risk_score:.0f}/100</div></div>
+<div class="cd"><div class="cl">Security Risk</div><div class="cv {qr_class}">{s.crypto_risk_score:.0f}/100</div></div>
 <div class="cd"><div class="cl">Secrets Exposure</div><div class="cv {se_class}">{s.secrets_exposure_score:.0f}/100</div></div>
-<div class="cd"><div class="cl">Crypto Agility</div><div class="cv {ag_class}">{s.crypto_agility_score:.0f}/100</div></div>
+<div class="cd"><div class="cl">Crypto Agility</div><div class="cv {ag_class}">{s.security_agility_score:.0f}/100</div></div>
 <div class="cd"><div class="cl">Secrets Critical</div><div class="cv se">{s.secrets_critical}</div></div>
 </div>
 

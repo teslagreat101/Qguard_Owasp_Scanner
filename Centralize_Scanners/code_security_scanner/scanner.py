@@ -10,12 +10,8 @@ Usage:
     result = scanner.scan_directory("/path/to/project")
     result = scanner.scan_file("/path/to/file.py")
     print(result.to_json())
-"""
 
-"""
-Enterprise Security Scanner — Main Orchestrator
-================================================
-Production-Ready Refactoring:
+Enterprise Production-Ready Refactoring:
 - Hybrid Concurrency (Process + Thread + Async)
 - OpenTelemetry Tracing
 - Circuit Breakers & Retry Logic
@@ -112,15 +108,15 @@ except ImportError:
 
 # Import local modules (from previous refactors)
 try:
-    from quantum_protocol.core.code_security_scanner.models import (
+    from .models import (
         FindingStatus, ScanConfiguration, SecurityScanResult,
         Severity, ValidatedFinding, VulnerabilityClass,
         ConfidenceRating, AgentRole, TaintFlow,
     )
-    from quantum_protocol.core.code_security_scanner.agents import (
+    from .agents import (
         AssessmentAgent, DiscoveryAgent, VerificationAgent,
     )
-    from quantum_protocol.core.code_security_scanner.data_flow import DataFlowGraph
+    from .data_flow import DataFlowGraph
 except ImportError:
     # Fallback for standalone testing
     FindingStatus = Severity = ValidatedFinding = object

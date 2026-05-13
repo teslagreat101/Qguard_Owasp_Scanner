@@ -9,12 +9,8 @@ reaching an analyst.
 Agent 1 (Discovery/Red Team): Finds potential vulnerabilities
 Agent 2 (Verification/Blue Team): Attempts to disprove findings
 Agent 3 (Assessment/Auditor): Final judgment + patch generation
-"""
 
-"""
-Enterprise Code Security Scanner — Multi-Agent Verification Pipeline
-=====================================================================
-Production-Ready Refactoring:
+Enterprise Production-Ready Refactoring:
 - Concurrent Processing (Multiprocessing)
 - Structured Logging & Metrics
 - SARIF Report Generation

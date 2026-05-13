@@ -1,5 +1,5 @@
 """
-Quantum Protocol v3.5 — Core Scanner Engine
+Quantara Security v5.0 — Core Scanner Engine
 
 The central orchestrator that:
   1. Walks directory trees with intelligent filtering
@@ -36,30 +36,30 @@ try:
 except ImportError:
     GIT_AVAILABLE = False
 
-from quantum_protocol.models.enums import (
-    AlgoFamily, ComplianceFramework, ConfidenceLevel, PQC_REPLACEMENTS,
+from .enums import (
+    AlgoFamily, ComplianceFramework, ConfidenceLevel,
     RiskLevel, ScanMode, COMPLIANCE_VIOLATIONS, SKIP_DIRS,
     MAX_FILE_SIZE_BYTES, SECRETS_REMEDIATION,
 )
-from quantum_protocol.models.findings import (
+from .findings import (
     CryptoFinding, CWE_MAP, FileReport, ScanSummary,
     estimate_remediation_effort,
 )
-from quantum_protocol.rules.patterns import COMPILED_RULES, PatternRule
-from quantum_protocol.analyzers.semantic import (
+from .patterns import COMPILED_RULES, PatternRule, QUANTARA_REPLACEMENTS
+from .semantic import (
     ast_scan_python, scan_certificate, scan_dependency_manifest,
 )
-from quantum_protocol.analyzers.secrets_engine import (
+from .secrets_engine import (
     COMPILED_SECRET_RULES, SecretRule, VALIDATORS,
     is_likely_false_positive_path, redact_secret,
     shannon_entropy, entropy_confidence_boost, is_high_entropy,
 )
-from quantum_protocol.utils.analysis import (
+from .analysis import (
     confidence_to_level, detect_language, extract_key_size,
     key_size_risk, sanitize_line,
 )
 
-logger = logging.getLogger("quantum_protocol.scanner")
+logger = logging.getLogger("quantara_security.scanner")
 
 MANIFEST_FILES = {
     "requirements.txt", "pipfile", "pyproject.toml", "setup.py", "setup.cfg",
@@ -174,7 +174,7 @@ def scan_file(
     if language == "cert":
         for cm in scan_certificate(raw, relative):
             family = cm.get("family_hint") or AlgoFamily.CERT_ISSUE
-            migration = PQC_REPLACEMENTS.get(family, {"notes": "Review certificate algorithm."})
+            migration = QUANTARA_REPLACEMENTS.get(family, {"notes": "Review certificate algorithm."})
             cwe = CWE_MAP.get(family)
             compliance = [fw.value for fw in COMPLIANCE_VIOLATIONS.get(family, [])]
             findings.append(CryptoFinding(
@@ -250,12 +250,10 @@ def scan_file(
                 continue
             if scan_mode == ScanMode.QUICK and rule.confidence < 0.80:
                 continue
-            if scan_mode == ScanMode.QUANTUM and not rule.family.is_quantum_broken:
-                continue
 
             for match in compiled_re.finditer(content):
                 line_no = content[:match.start()].count("\n") + 1
-                col_start = match.start() - content.rfind("\n", 0, match.start()) - 1
+                col_start = match.start() - str(content[:match.start()]).rfind("\n") - 1
                 col_end = col_start + len(match.group())
 
                 dedup_key = f"{relative}:{line_no}:{rule.family.value}"
@@ -289,7 +287,7 @@ def scan_file(
                 if line_no in ast_meta:
                     confidence = min(1.0, confidence + ast_meta[line_no].get("confidence_boost", 0.05))
 
-                migration = PQC_REPLACEMENTS.get(rule.family, {
+                migration = QUANTARA_REPLACEMENTS.get(rule.family, {
                     "notes": "Consult NIST SP 800-227 for migration guidance.",
                 })
                 cwe = CWE_MAP.get(rule.family)
@@ -304,7 +302,7 @@ def scan_file(
                     column_start=col_start, column_end=col_end,
                     algorithm=rule.family.value, family=rule.family,
                     risk=risk,
-                    confidence=round(confidence, 3),
+                    confidence=float(round(float(confidence), 3)),
                     confidence_level=confidence_to_level(confidence),
                     key_size=ks, hndl_relevant=rule.hndl_relevant,
                     pattern_note=rule.note,
@@ -368,7 +366,7 @@ def _scan_secrets(
     for compiled_re, rule in COMPILED_SECRET_RULES:
         for match in compiled_re.finditer(content):
             line_no = content[:match.start()].count("\n") + 1
-            col_start = match.start() - content.rfind("\n", 0, match.start()) - 1
+            col_start = match.start() - str(content[:match.start()]).rfind("\n") - 1
             col_end = col_start + len(match.group())
             raw_line = lines[line_no - 1] if line_no <= len(lines) else ""
 
@@ -455,7 +453,7 @@ def _scan_secrets(
                 algorithm=rule.family.value,
                 family=rule.family,
                 risk=rule.risk,
-                confidence=round(confidence, 3),
+                confidence=float(round(float(confidence), 3)),
                 confidence_level=confidence_to_level(confidence),
                 key_size=None,
                 hndl_relevant=True,  # all secrets are HNDL-relevant
@@ -527,21 +525,19 @@ def _estimate_secret_cvss(rule: SecretRule) -> float:
     # Private keys = infrastructure compromise
     if "infra" in rule.tags or "ssh" in rule.tags:
         return min(10.0, max(base, 9.5))
-    return min(10.0, round(base, 1))
+    return min(10.0, float(round(float(base), 1)))
 
 
 def _estimate_cvss(family: AlgoFamily, risk: RiskLevel, key_size: Optional[int]) -> float:
-    """Estimate CVSS 3.1 for crypto vulnerabilities."""
+    """Estimate CVSS 3.1 for security findings."""
     base = risk.numeric
-    if family.is_quantum_broken:
-        base = max(base, 7.5)
     if family.is_classically_broken:
         base = max(base, 8.0)
     if family in (AlgoFamily.HARDCODED_KEY, AlgoFamily.HARDCODED_CERT):
         base = 9.8
     if family.is_secret:
         base = max(base, 9.0)
-    return min(10.0, round(base, 1))
+    return min(10.0, float(round(float(base), 1)))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -600,7 +596,7 @@ def scan_directory(
 # Score Calculators
 # ────────────────────────────────────────────────────────────────────────────
 
-def compute_quantum_risk_score(findings: list[CryptoFinding]) -> float:
+def compute_crypto_risk_score(findings: list[CryptoFinding]) -> float:
     if not findings:
         return 0.0
     weights = {RiskLevel.CRITICAL: 10.0, RiskLevel.HIGH: 6.0, RiskLevel.MEDIUM: 3.0,
@@ -608,20 +604,19 @@ def compute_quantum_risk_score(findings: list[CryptoFinding]) -> float:
     total = sum(
         weights.get(f.risk, 0) * f.confidence
         for f in findings
-        if (f.family.is_quantum_broken or f.family.is_classically_broken) and not f.is_secret
+        if f.family.is_classically_broken and not f.is_secret
     )
-    return min(100.0, round(total, 1))
+    return min(100.0, float(round(float(total), 1)))
 
 
 def compute_agility_score(findings: list[CryptoFinding]) -> float:
     agility_signals = sum(1 for f in findings if f.family == AlgoFamily.AGILITY)
-    pqc_signals = sum(1 for f in findings if f.family.is_pqc_safe)
     vuln_families = len(set(
         f.family for f in findings
-        if (f.family.is_quantum_broken or f.family.is_classically_broken) and not f.is_secret
+        if f.family.is_classically_broken and not f.is_secret
     ))
-    score = 50.0 + agility_signals * 10.0 + pqc_signals * 15.0 - vuln_families * 5.0
-    return max(0.0, min(100.0, round(score, 1)))
+    score = 50.0 + agility_signals * 10.0 - vuln_families * 5.0
+    return max(0.0, min(100.0, float(round(float(score), 1))))
 
 
 def compute_secrets_exposure_score(findings: list[CryptoFinding]) -> float:
@@ -641,11 +636,11 @@ def compute_secrets_exposure_score(findings: list[CryptoFinding]) -> float:
     weights = {RiskLevel.CRITICAL: 15.0, RiskLevel.HIGH: 8.0,
                RiskLevel.MEDIUM: 3.0, RiskLevel.LOW: 1.0, RiskLevel.INFO: 0.0}
     total = sum(weights.get(f.risk, 0) * f.confidence for f in secret_findings)
-    return min(100.0, round(total, 1))
+    return min(100.0, float(round(float(total), 1)))
 
 
 def compute_overall_security_score(
-    quantum_risk: float,
+    crypto_risk: float,
     secrets_exposure: float,
     agility: float,
 ) -> float:
@@ -653,11 +648,11 @@ def compute_overall_security_score(
     Combined security score (0–100). Higher = BETTER.
     Inverts the risk scores and combines with agility.
     """
-    crypto_health = max(0, 100 - quantum_risk)
+    crypto_health = max(0, 100 - crypto_risk)
     secrets_health = max(0, 100 - secrets_exposure)
     # Weighted: crypto 40%, secrets 40%, agility 20%
     score = crypto_health * 0.40 + secrets_health * 0.40 + agility * 0.20
-    return max(0.0, min(100.0, round(score, 1)))
+    return max(0.0, min(100.0, float(round(float(score), 1))))
 
 
 def build_file_reports(findings: list[CryptoFinding]) -> list[FileReport]:
@@ -670,7 +665,7 @@ def build_file_reports(findings: list[CryptoFinding]) -> list[FileReport]:
         high = sum(1 for f in ffindings if f.risk == RiskLevel.HIGH)
         secrets = sum(1 for f in ffindings if f.is_secret)
         risk_score = sum(f.risk.numeric * f.confidence for f in ffindings)
-        has_pqc = any(f.family.is_pqc_safe for f in ffindings)
+        has_high_risk = critical > 0
         reports.append(FileReport(
             path=filepath,
             language=ffindings[0].language if ffindings else "unknown",
@@ -678,9 +673,9 @@ def build_file_reports(findings: list[CryptoFinding]) -> list[FileReport]:
             critical_count=critical,
             high_count=high,
             secrets_count=secrets,
-            risk_score=round(risk_score, 1),
+            risk_score=float(round(float(risk_score), 1)),
             findings=ffindings,
-            has_pqc_adoption=has_pqc,
+            has_high_risk_findings=has_high_risk,
         ))
     return sorted(reports, key=lambda r: r.risk_score, reverse=True)
 
@@ -721,22 +716,22 @@ def build_summary(
     files_scanned: int, files_skipped: int, languages: set[str],
     duration: float, metadata: Optional[dict] = None,
 ) -> ScanSummary:
-    qr = compute_quantum_risk_score(findings)
+    cr = compute_crypto_risk_score(findings)
     ag = compute_agility_score(findings)
     se = compute_secrets_exposure_score(findings)
-    overall = compute_overall_security_score(qr, se, ag)
+    overall = compute_overall_security_score(cr, se, ag)
 
     secret_findings = [f for f in findings if f.is_secret]
 
     return ScanSummary(
         scan_id=scan_id,
-        scanner_version="3.5.0",
+        scanner_version="4.0.0",
         source=source,
         source_type=source_type,
         scan_mode=scan_mode.value,
         started_at=started_at,
         completed_at=datetime.now(timezone.utc).isoformat(),
-        duration_seconds=round(duration, 2),
+        duration_seconds=float(round(float(duration), 2)),
         files_scanned=files_scanned,
         files_skipped=files_skipped,
         total_findings=len(findings),
@@ -745,14 +740,14 @@ def build_summary(
         medium_count=sum(1 for f in findings if f.risk == RiskLevel.MEDIUM),
         low_count=sum(1 for f in findings if f.risk == RiskLevel.LOW),
         info_count=sum(1 for f in findings if f.risk == RiskLevel.INFO),
-        hndl_count=sum(1 for f in findings if f.hndl_relevant),
-        pqc_ready_count=sum(1 for f in findings if f.family.is_pqc_safe),
+        exposure_count=sum(1 for f in findings if f.exposure_relevant),
+        secure_algo_count=sum(1 for f in findings if f.family == AlgoFamily.AGILITY),
         secrets_count=len(secret_findings),
         secrets_critical=sum(1 for f in secret_findings if f.risk == RiskLevel.CRITICAL),
         secrets_by_provider=build_secrets_by_provider(findings),
         attack_surface_summary=build_attack_surface_summary(findings),
-        quantum_risk_score=qr,
-        crypto_agility_score=ag,
+        crypto_risk_score=cr,
+        security_agility_score=ag,
         secrets_exposure_score=se,
         overall_security_score=overall,
         languages_detected=sorted(languages),
@@ -772,7 +767,7 @@ def scan_local_directory(path: str, scan_mode: ScanMode = ScanMode.FULL,
                          progress_cb: Optional[Callable] = None) -> ScanSummary:
     started_at = datetime.now(timezone.utc).isoformat()
     start_time = time.monotonic()
-    scan_id = hashlib.sha256(f"{path}:{started_at}".encode()).hexdigest()[:16]
+    scan_id = str(hashlib.sha256(f"{path}:{started_at}".encode()).hexdigest())[:16]
     root = Path(path).resolve()
     if not root.exists():
         raise FileNotFoundError(f"Path does not exist: {path}")
@@ -789,7 +784,7 @@ def scan_repository(repo_url: str, github_token: Optional[str] = None,
         raise RuntimeError("GitPython not installed. Run: pip install gitpython")
     started_at = datetime.now(timezone.utc).isoformat()
     start_time = time.monotonic()
-    scan_id = hashlib.sha256(f"{repo_url}:{started_at}".encode()).hexdigest()[:16]
+    scan_id = str(hashlib.sha256(f"{repo_url}:{started_at}".encode()).hexdigest())[:16]
     auth_url = repo_url
     if github_token:
         parsed = urlparse(repo_url)

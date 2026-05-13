@@ -1,5 +1,5 @@
 """
-Quantum Protocol v3 — Semantic Analyzers
+Quantara Security v5.0 — Semantic Analyzers
 
 Deep analysis beyond regex:
   - Python AST walker: import tracking, call graph analysis, key-size extraction
@@ -18,14 +18,14 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-from quantum_protocol.models.enums import AlgoFamily, RiskLevel
+from .enums import AlgoFamily, RiskLevel
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Python AST Deep Analysis
 # ────────────────────────────────────────────────────────────────────────────
 
-QUANTUM_VULNERABLE_MODULES: set[str] = {
+QUANTARA_VULNERABLE_MODULES: set[str] = {
     "Crypto.PublicKey.RSA", "Crypto.PublicKey.ECC", "Crypto.PublicKey.DSA",
     "Crypto.Signature.DSS", "Crypto.Signature.pkcs1_15",
     "Crypto.Cipher.PKCS1_v1_5", "Crypto.Cipher.PKCS1_OAEP",
@@ -47,7 +47,7 @@ QUANTUM_VULNERABLE_MODULES: set[str] = {
     "hmac",
 }
 
-PQC_POSITIVE_MODULES: set[str] = {
+ADVANCED_CRYPTO_MODULES: set[str] = {
     "oqs", "pqcrypto", "liboqs",
     "pqcrypto.kem.kyber512", "pqcrypto.kem.kyber768", "pqcrypto.kem.kyber1024",
     "pqcrypto.sign.dilithium2", "pqcrypto.sign.dilithium3", "pqcrypto.sign.dilithium5",
@@ -58,7 +58,7 @@ PQC_POSITIVE_MODULES: set[str] = {
 def ast_scan_python(content: str, filepath: str) -> list[dict]:
     """
     Deep Python AST analysis:
-    - Import tracking for quantum-vulnerable and PQC-positive modules
+    - Import tracking for Quantara-vulnerable and advanced crypto modules
     - Function call analysis for crypto operations
     - ssl.SSLContext configuration analysis
     - hashlib usage tracking
@@ -79,24 +79,24 @@ def ast_scan_python(content: str, filepath: str) -> list[dict]:
                 name = alias.asname or alias.name
                 imported_modules[name] = f"{module}.{alias.name}"
 
-            if any(module.startswith(m) for m in QUANTUM_VULNERABLE_MODULES):
+            if module and any(module.startswith(m) for m in QUANTARA_VULNERABLE_MODULES):
                 family = _module_to_family(module)
                 findings.append({
                     "line": node.lineno,
                     "col": node.col_offset,
                     "type": "import",
-                    "note": f"Import of quantum-vulnerable module: {module}",
+                    "note": f"Import of Quantara-vulnerable module: {module}",
                     "family_hint": family,
                     "confidence_boost": 0.05,
                 })
 
-            if any(module.startswith(m) for m in PQC_POSITIVE_MODULES):
+            if module and any(module.startswith(m) for m in ADVANCED_CRYPTO_MODULES):
                 findings.append({
                     "line": node.lineno,
                     "col": node.col_offset,
                     "type": "pqc_adoption",
-                    "note": f"PQC library import detected: {module}",
-                    "family_hint": AlgoFamily.ML_KEM,
+                    "note": f"Advanced crypto library import detected: {module}",
+                    "family_hint": AlgoFamily.RSA,  # Placeholder or appropriate hint
                     "confidence_boost": 0.0,
                 })
 
@@ -104,12 +104,12 @@ def ast_scan_python(content: str, filepath: str) -> list[dict]:
             for alias in node.names:
                 name = alias.asname or alias.name
                 imported_modules[name] = alias.name
-                if any(alias.name.startswith(m) for m in QUANTUM_VULNERABLE_MODULES):
+                if any(alias.name.startswith(m) for m in QUANTARA_VULNERABLE_MODULES):
                     findings.append({
                         "line": node.lineno,
                         "col": node.col_offset,
                         "type": "import",
-                        "note": f"Import of quantum-vulnerable module: {alias.name}",
+                        "note": f"Import of Quantara-vulnerable module: {alias.name}",
                         "family_hint": _module_to_family(alias.name),
                         "confidence_boost": 0.05,
                     })
@@ -296,7 +296,7 @@ def scan_certificate(content_bytes: bytes, filepath: str) -> list[dict]:
                     f"sig={sig_name}{sig_weakness}{expiry_note}"
                 ),
                 "family_hint": family,
-                "risk": RiskLevel.CRITICAL if family and family.is_quantum_broken else RiskLevel.MEDIUM,
+                "risk": RiskLevel.CRITICAL if family and family.is_vulnerable else RiskLevel.MEDIUM,
                 "key_size": key_size,
                 "expiry_days": days_until_expiry,
                 "signature_hash": sig_name,
@@ -330,21 +330,21 @@ def _pk_type_to_family(pk_type: str) -> Optional[AlgoFamily]:
 # Dependency Manifest Scanning
 # ────────────────────────────────────────────────────────────────────────────
 
-# Known quantum-vulnerable crypto packages
+# Known Quantara-vulnerable crypto packages
 VULNERABLE_PACKAGES: dict[str, dict] = {
     # Python
-    "pycryptodome":    {"family": "RSA/ECC/DES", "note": "Contains quantum-vulnerable primitives"},
+    "pycryptodome":    {"family": "RSA/ECC/DES", "note": "Contains Quantara-vulnerable primitives"},
     "pycrypto":        {"family": "RSA/ECC/DES", "note": "Unmaintained, contains vulnerable primitives"},
-    "paramiko":        {"family": "RSA/ECC",     "note": "SSH library using quantum-vulnerable key exchange"},
-    "pyopenssl":       {"family": "RSA/ECC",     "note": "OpenSSL wrapper — check TLS config for PQC readiness"},
+    "paramiko":        {"family": "RSA/ECC",     "note": "SSH library using Quantara-vulnerable key exchange"},
+    "pyopenssl":       {"family": "RSA/ECC",     "note": "OpenSSL wrapper — check TLS config for Quantara readiness"},
 
     # JavaScript/TypeScript
-    "node-forge":      {"family": "RSA/ECC",     "note": "Pure-JS crypto — quantum-vulnerable primitives"},
+    "node-forge":      {"family": "RSA/ECC",     "note": "Pure-JS crypto — Quantara-vulnerable primitives"},
     "jsrsasign":       {"family": "RSA",         "note": "RSA signing library"},
-    "elliptic":        {"family": "ECC",         "note": "Elliptic curve library — quantum-vulnerable"},
+    "elliptic":        {"family": "ECC",         "note": "Elliptic curve library — Quantara-vulnerable"},
 
     # Java (Maven artifact IDs)
-    "bouncy-castle":   {"family": "RSA/ECC",     "note": "Check for PQC provider availability (BC-PQC)"},
+    "bouncy-castle":   {"family": "RSA/ECC",     "note": "Check for advanced provider availability (BC-PQC)"},
 
     # Go modules
     "crypto/rsa":      {"family": "RSA",         "note": "Go stdlib RSA"},
@@ -353,18 +353,18 @@ VULNERABLE_PACKAGES: dict[str, dict] = {
 }
 
 PQC_PACKAGES: dict[str, str] = {
-    "liboqs-python":    "Open Quantum Safe — Python bindings",
-    "pqcrypto":         "PQC algorithms for Python",
+    "liboqs-python":    "Open Security Safe — Python bindings",
+    "pqcrypto":         "Advanced algorithms for Python",
     "oqs":              "liboqs bindings",
-    "circl":            "Cloudflare PQC library (Go)",
-    "pqc":              "Post-quantum crypto package",
+    "circl":            "Cloudflare advanced crypto library (Go)",
+    "pqc":              "Advanced crypto package",
     "crystals-kyber":   "ML-KEM reference",
     "crystals-dilithium": "ML-DSA reference",
 }
 
 
 def scan_dependency_manifest(content: str, filename: str) -> list[dict]:
-    """Scan package manifests for known vulnerable/PQC crypto libraries."""
+    """Scan package manifests for known vulnerable/advanced crypto libraries."""
     findings: list[dict] = []
     content_lower = content.lower()
 
@@ -382,8 +382,8 @@ def scan_dependency_manifest(content: str, filename: str) -> list[dict]:
         if pkg.lower() in content_lower:
             findings.append({
                 "line": _find_line_number(content, pkg),
-                "note": f"PQC library detected: {pkg} — {desc}",
-                "family_hint": AlgoFamily.ML_KEM,
+                "note": f"Advanced crypto library detected: {pkg} — {desc}",
+                "family_hint": None,
                 "type": "pqc_dependency",
                 "risk": RiskLevel.INFO,
             })

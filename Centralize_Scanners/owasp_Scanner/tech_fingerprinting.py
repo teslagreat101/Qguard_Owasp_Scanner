@@ -1,5 +1,5 @@
 """
-Technology Fingerprinting Engine v1.0
+Quantara Security v5.0 — Technology Fingerprinting Engine
 ======================================
 
 Passive + active technology detection for web applications.
@@ -258,12 +258,12 @@ class TechFingerprinter:
         status_code: int,
         headers: dict[str, str],     # lowercase keys
         body: str,
-        cookies: dict[str, str] = None,
+        cookies: Optional[dict[str, str]] = None,
     ) -> TechProfile:
         profile = TechProfile(url=url)
         tech_set: set[str] = set()
         headers_lower = {k.lower(): v.lower() for k, v in headers.items()}
-        body_lower = body[:50000].lower()  # only scan first 50KB
+        body_lower = str(body[:50000]).lower()  # only scan first 50KB
         cookies = cookies or {}
 
         # ── Header analysis ───────────────────────────────────────────
@@ -279,7 +279,7 @@ class TechFingerprinter:
         self._check_security_headers(headers_lower, profile)
 
         # ── Version extraction ────────────────────────────────────────
-        self._extract_versions(headers_lower, body[:5000], profile)
+        self._extract_versions(headers_lower, str(body[:5000]), profile)
 
         # ── URL path hints ─────────────────────────────────────────────
         self._analyze_url_path(url, profile, tech_set)
@@ -621,7 +621,7 @@ WAF_SIGNATURES: list[tuple[str, str]] = [
 
 def detect_waf(headers: dict[str, str], body: str = "") -> str:
     """Detect WAF from headers and body. Returns WAF name or empty string."""
-    combined = "\n".join(f"{k}: {v}" for k, v in headers.items()) + "\n" + body[:2000]
+    combined = "\n".join(f"{k}: {v}" for k, v in headers.items()) + "\n" + str(body[:2000])
     combined_lower = combined.lower()
 
     for pattern, waf_name in WAF_SIGNATURES:

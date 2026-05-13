@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — A01: Broken Access Control Scanner
+Quantara Security v4.0 — A01: Broken Access Control Scanner
 
 Detects:
   - IDOR patterns (direct user-supplied ID in DB queries without ownership check)

@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — A02: Security Misconfiguration Engine
+Quantara Security v5.0 — A02: Security Misconfiguration Engine
 
 Detects:
   - Debug/Development mode in production (Django, Flask, Express, Rails, Spring, PHP)
@@ -301,7 +301,7 @@ def scan_misconfig_file(
     for compiled_re, rule in COMPILED_MISCONFIG_RULES:
         # Apply file filter if specified
         if rule.file_filter:
-            if not re.search(rule.file_filter, filepath, re.IGNORECASE):
+            if not re.search(str(rule.file_filter), filepath, re.IGNORECASE):
                 continue
 
         for match in compiled_re.finditer(content):
@@ -417,8 +417,8 @@ def scan_misconfig_file_telemetry(
         "scan_id": scan_id,
         "file": filepath,
         "findings_count": len(findings),
-        "duration_ms": round(elapsed_ms, 2),
-        "timestamp": _time.time(),
+        "duration_ms": float(round(float(elapsed_ms), 2)),
+        "timestamp": float(_time.time()),
     }
     return findings, telemetry
 
@@ -473,7 +473,7 @@ def scan_misconfig_directory_enterprise(
         "root": root,
         "files_scanned": files_scanned,
         "findings_count": len(findings),
-        "duration_ms": round((_time.time() - start) * 1000, 2),
+        "duration_ms": float(round(float((_time.time() - start) * 1000), 2)),
         "severity_breakdown": {
             sev: sum(1 for f in findings if f.severity.lower() == sev)
             for sev in ["critical", "high", "medium", "low", "info"]

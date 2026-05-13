@@ -13,12 +13,8 @@ This module builds a Data Flow Graph (DFG) that:
   3. Detects sanitization barriers that neutralize taint
   4. Identifies dangerous sinks where unsanitized taint is consumed
   5. Produces TaintFlow traces for the Discovery Agent
-"""
 
-"""
-Enterprise Data Flow Analysis Engine — Taint Tracking System
-=============================================================
-Production-Ready Refactoring:
+Enterprise Data Flow Analysis Engine — Taint Tracking System:
 - Hybrid Analysis (Regex + AST)
 - Cross-File Taint Propagation
 - Parallel Processing with Caching

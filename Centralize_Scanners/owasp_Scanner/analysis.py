@@ -1,5 +1,5 @@
 """
-Quantum Protocol v3 — Utility Functions
+Quantara Security — Utility Functions
 
 Includes:
   - Shannon entropy analysis for secret detection
@@ -19,10 +19,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
-from quantum_protocol.models.enums import (
+from .enums import (
     AlgoFamily, RiskLevel, LANGUAGE_MAP, ConfidenceLevel,
 )
-from quantum_protocol.rules.patterns import KEY_SIZE_PATTERNS
+from .patterns import KEY_SIZE_PATTERNS
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -110,34 +110,34 @@ def extract_key_size(line: str, context: str) -> Optional[int]:
 def key_size_risk(family: AlgoFamily, key_size: Optional[int]) -> tuple[RiskLevel, str]:
     """Determine risk level based on algorithm family and key size."""
 
-    # Quantum-broken asymmetric — always CRITICAL regardless of key size
+    # Asymmetric algorithms
     if family in (AlgoFamily.RSA, AlgoFamily.RSA_OAEP):
         if key_size is None:
-            return RiskLevel.CRITICAL, "RSA — quantum-broken (Shor's algorithm), key size unknown"
+            return RiskLevel.MEDIUM, "RSA — key size unknown"
         if key_size < 1024:
-            return RiskLevel.CRITICAL, f"RSA-{key_size} — classically broken TODAY and quantum-broken"
+            return RiskLevel.CRITICAL, f"RSA-{key_size} — classically broken TODAY"
         if key_size < 2048:
-            return RiskLevel.CRITICAL, f"RSA-{key_size} — classically weak and quantum-broken"
-        return RiskLevel.CRITICAL, f"RSA-{key_size} — quantum-broken regardless of key size"
+            return RiskLevel.HIGH, f"RSA-{key_size} — classically weak"
+        return RiskLevel.INFO, f"RSA-{key_size} — classically secure"
 
     if family in (AlgoFamily.ECC, AlgoFamily.ECDSA, AlgoFamily.ECDH,
                   AlgoFamily.ED25519, AlgoFamily.ED448, AlgoFamily.X25519, AlgoFamily.X448):
-        return RiskLevel.CRITICAL, f"{family.value} — quantum-broken (Shor's algorithm on ECDLP)"
+        return RiskLevel.INFO, f"{family.value} — modern asymmetric algorithm"
 
     if family == AlgoFamily.DSA:
-        return RiskLevel.CRITICAL, "DSA — deprecated by NIST AND quantum-broken"
+        return RiskLevel.CRITICAL, "DSA — deprecated by NIST"
 
     if family == AlgoFamily.DH:
         if key_size and key_size < 2048:
-            return RiskLevel.CRITICAL, f"DH-{key_size} — classically weak AND quantum-broken"
-        return RiskLevel.CRITICAL, f"DH — quantum-broken (Shor's algorithm on DLP)"
+            return RiskLevel.CRITICAL, f"DH-{key_size} — classically weak"
+        return RiskLevel.MEDIUM, f"DH — discrete log based key exchange"
 
     if family == AlgoFamily.ELGAMAL:
-        return RiskLevel.CRITICAL, "ElGamal — quantum-broken (discrete log)"
+        return RiskLevel.HIGH, "ElGamal — obsolete asymmetric algorithm"
 
-    # Symmetric — Grover halves effective key length
+    # Symmetric
     if family == AlgoFamily.AES_128:
-        return RiskLevel.MEDIUM, "AES-128 provides only 64-bit quantum security (Grover). Use AES-256."
+        return RiskLevel.INFO, "AES-128 — standard symmetric security"
 
     if family == AlgoFamily.DES:
         return RiskLevel.CRITICAL, "DES (56-bit) — classically broken. Immediate removal required."

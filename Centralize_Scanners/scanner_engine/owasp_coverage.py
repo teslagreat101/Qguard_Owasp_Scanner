@@ -1,5 +1,5 @@
 """
-Quantum Protocol v5.0 — OWASP Top 10:2025 Coverage Map
+Quantara Security v5.0 — OWASP Top 10:2025 Coverage Map
 
 Comprehensive mapping of all scanner modules to OWASP categories
 with pattern counts, CWE coverage, and compliance alignments.

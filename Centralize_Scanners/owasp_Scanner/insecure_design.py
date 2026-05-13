@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — A06: Insecure Design Scanner
+Quantara Security v4.0 — A06: Insecure Design Scanner
 
 Detects:
   - Missing rate limiting on auth/login endpoints

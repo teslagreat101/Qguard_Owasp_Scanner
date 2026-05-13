@@ -70,6 +70,20 @@ except ImportError as e:
     logger.warning(f"tech_fingerprinting not available: {e}")
     FINGERPRINT_AVAILABLE = False
 
+# NEO Intelligence Layer imports
+try:
+    # Try importing from the new neo_intelligence package in the parent dir
+    import sys
+    import os
+    _ENGINE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scanner_engine"))
+    if _ENGINE_PATH not in sys.path:
+        sys.path.insert(0, _ENGINE_PATH)
+    
+    from neo_intelligence import get_payload_generator, get_spec_abuse_kb  # type: ignore
+    NEO_INTEL_AVAILABLE = True
+except ImportError:
+    NEO_INTEL_AVAILABLE = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Project root path for finding Quantara_Payloads_Templates
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,6 +151,13 @@ class QuantaraWebFinding:
 def _build_builtin_templates() -> list[QuantaraTemplate]:
     """Build built-in OWASP Top 10 templates defined in Python."""
     templates = []
+    
+    # Initialize NEO Payload Generator if available
+    neo_gen = None
+    if NEO_INTEL_AVAILABLE:
+        neo_gen = get_payload_generator()
+        if neo_gen:
+            logger.info("NEO Intelligence: Payload Generator active for template augmentation.")
 
     # ── A01: Broken Access Control ────────────────────────────────────
 
@@ -304,6 +325,15 @@ def _build_builtin_templates() -> list[QuantaraTemplate]:
         ],
         matchers_condition="and",
     ))
+
+    # Augment XSS template with NEO payloads
+    if neo_gen:
+        neo_xss = neo_gen.generate_payloads("xss", {"intensity": "high", "waf_evasive": True})
+        if neo_xss:
+            xss_t.http_requests[0].payloads["xss_payload"].extend(neo_xss)
+            logger.debug(f"NEO augmented XSS template with {len(neo_xss)} smart payloads")
+
+    templates.append(xss_t)
     templates.append(xss_t)
 
     # LFI / Path Traversal
@@ -354,6 +384,14 @@ def _build_builtin_templates() -> list[QuantaraTemplate]:
         ],
         matchers_condition="or",
     ))
+
+    # Augment LFI template with NEO payloads
+    if neo_gen:
+        neo_lfi = neo_gen.generate_payloads("lfi", {"intensity": "high"})
+        if neo_lfi:
+            lfi_t.http_requests[0].payloads["lfi_payload"].extend(neo_lfi)
+            logger.debug(f"NEO augmented LFI template with {len(neo_lfi)} smart payloads")
+
     templates.append(lfi_t)
 
     # Command Injection
@@ -723,6 +761,14 @@ def _build_builtin_templates() -> list[QuantaraTemplate]:
         ],
         matchers_condition="or",
     ))
+    
+    # Augment SSRF template with NEO payloads
+    if neo_gen:
+        neo_ssrf = neo_gen.generate_payloads("ssrf", {"cloud_targeted": True})
+        if neo_ssrf:
+            ssrf_t.http_requests[0].payloads["ssrf_url"].extend(neo_ssrf)
+            logger.debug(f"NEO augmented SSRF template with {len(neo_ssrf)} smart payloads")
+
     templates.append(ssrf_t)
 
     # ── A06: Outdated Components ───────────────────────────────────────
@@ -1152,6 +1198,32 @@ class QuantaraWebScanner:
 
         description = match.description or match.template_name
         remediation = REMEDIATION_MAP.get(template_id, "")
+
+        # ── NEO Intelligence: Specification Abuse KB ──────────────────
+        spec_abuse_intel = ""
+        if NEO_INTEL_AVAILABLE and tech_profile:
+            kb = get_spec_abuse_kb()
+            if kb:
+                # Get abuse vectors for the detected technology
+                techs = [tech_profile.server, tech_profile.language, tech_profile.framework]
+                techs = [t for t in techs if t and t.lower() != "unknown"]
+                
+                all_vectors = []
+                for tech in techs:
+                    vectors = kb.get_abuse_vectors(tech)
+                    if vectors:
+                        all_vectors.extend(vectors)
+                
+                if all_vectors:
+                    # Filter vectors relevant to this finding's category
+                    category = _owasp_to_category(match.owasp or match.template_id)
+                    relevant = [v for v in all_vectors if any(tag.lower() in v["description"].lower() for tag in match.tags)]
+                    if not relevant: relevant = all_vectors[:2] # fallback to general vectors
+                    
+                    vector_str = "\n".join([f"• {v['description']}" for v in relevant[:3]])
+                    spec_abuse_intel = f"\n\n[NEO SPEC ABUSE INTELLIGENCE]\nDetected tech stack abuse vectors for {', '.join(techs)}:\n{vector_str}"
+        
+        description += spec_abuse_intel
 
         # Build matched content string
         matched_content = match.matched_content or ""

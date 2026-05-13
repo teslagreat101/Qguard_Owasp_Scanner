@@ -5,9 +5,7 @@ Code Security Scanner — Data Models
 Enterprise-grade data structures for the multi-agent security scanning
 pipeline. All models are immutable after validation stage to ensure
 audit integrity.
-"""
 
-"""
 Enterprise Security Scanner — Data Models
 ==========================================
 Production-Ready Refactoring:
@@ -1484,7 +1482,6 @@ class SchemaMigrator:
         return data
     
     @staticmethod
-    @register_migration("1.0.0", "2.0.0")
     def migrate_v1_to_v2(data: dict) -> dict:
         """Migration from schema 1.0.0 to 2.0.0."""
         # Add new required fields with defaults
@@ -1493,6 +1490,9 @@ class SchemaMigrator:
         data.setdefault('false_positive_probability', 0.0)
         data.setdefault('verification_attempts', 0)
         return data
+
+# Register migrations after class definition to avoid classmethod descriptor issue
+SchemaMigrator._migrations["1.0.0->2.0.0"] = SchemaMigrator.migrate_v1_to_v2
 
 
 # ────────────────────────────────────────────────────────────────────────────

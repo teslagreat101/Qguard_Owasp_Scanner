@@ -1,5 +1,5 @@
 """
-Quantum Protocol v4.0 — A05: Injection Scanner Engine
+Quantara Security v4.0 — A05: Injection Scanner Engine
 
 Detects:
   - SQL Injection (string concat, raw queries, ORM bypasses)
@@ -387,15 +387,17 @@ def scan_injection_file(
 
     for compiled_re, rule in COMPILED_INJECTION_RULES:
         # Language filtering: boost confidence if language matches
+        lang_hint = rule.language_hint
         lang_match = (
-            rule.language_hint is None
-            or rule.language_hint.lower() == language.lower()
-            or rule.language_hint.lower() in language.lower()
+            lang_hint is None
+            or (lang_hint.lower() == language.lower())
+            or (lang_hint.lower() in language.lower())
         )
 
         for match in compiled_re.finditer(content):
             line_num = content.count("\n", 0, match.start()) + 1
-            matched_text = match.group(0).strip()[:250]
+            _mt = str(match.group(0)).strip()
+            matched_text = _mt[:250] if len(_mt) > 250 else _mt
 
             finding_key = f"{rule.id}:{line_num}"
             if finding_key in seen:
@@ -419,7 +421,7 @@ def scan_injection_file(
                 category="A05:2025-Injection",
                 cwe=rule.cwe,
                 remediation=rule.remediation,
-                confidence=round(conf, 2),
+                confidence=float(f"{(conf or 0.5):.2f}"),
                 language=language,
                 tags=list(rule.tags),
             ))
@@ -434,10 +436,11 @@ def scan_injection_directory(
     """Walk a directory tree and scan for injection vulnerabilities."""
     all_findings: list[InjectionFinding] = []
     root_path = Path(root)
-    scanned = 0
+    scanned: int = 0
 
     for fpath in root_path.rglob("*"):
-        if scanned >= max_files:
+        _sc = int(scanned)
+        if _sc >= int(max_files):
             break
         if fpath.is_dir():
             continue
@@ -452,7 +455,7 @@ def scan_injection_directory(
                 continue
             findings = scan_injection_file(content, str(fpath), str(root_path))
             all_findings.extend(findings)
-            scanned += 1
+            scanned = int(scanned) + 1 # type: ignore
         except (OSError, PermissionError):
             continue
 
@@ -468,30 +471,53 @@ import logging as _logging
 
 _inj_logger = _logging.getLogger("enterprise.scanner.injection")
 
+# NEO Intelligence Layer imports
+try:
+    import sys
+    import os
+    _ENGINE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scanner_engine"))
+    if _ENGINE_PATH not in sys.path:
+        sys.path.insert(0, _ENGINE_PATH)
+    from neo_intelligence import get_spec_abuse_kb  # type: ignore
+    NEO_INTEL_AVAILABLE = True
+except ImportError:
+    NEO_INTEL_AVAILABLE = False
 
-def normalize_injection_finding(f: InjectionFinding, scan_id: str = "") -> dict:
+
+def normalize_injection_finding(finding: InjectionFinding, scan_id: str = "") -> dict:
     """
     Convert an InjectionFinding to a NormalizedFinding-compatible dict.
     Compatible with orchestrator.normalize_finding() and BaseScanner.
     """
+    # Enrich with Spec Abuse KB if available
+    spec_abuse_intel = ""
+    if NEO_INTEL_AVAILABLE and finding.language:
+        kb = get_spec_abuse_kb()
+        if kb:
+            vectors = kb.get_abuse_vectors(finding.language)
+            if vectors:
+                relevant = [v for v in vectors if "injection" in str(v.get("description", "")).lower() or "sql" in str(v.get("description", "")).lower()]
+                if not relevant:
+                    relevant = list(vectors)[:2]
+                relevant_vectors = list(relevant)[:2]
+                vector_str = "\n".join([f"• {str(v.get('description', ''))}" for v in relevant_vectors])
+                spec_abuse_intel = f"\n\n[NEO SPEC ABUSE INTELLIGENCE]\nKnown {finding.language} injection vectors:\n{vector_str}"
+
     return {
-        "id": f.id,
+        "id": finding.id,
         "scanner_source": "injection",
         "module": "injection",
-        "category": f.category,
-        "severity": f.severity.lower(),
-        "title": f.title,
-        "description": f.description,
-        "matched_content": f.matched_content,
-        "cwe": f.cwe,
+        "category": finding.category,
+        "severity": finding.severity.lower(),
+        "title": finding.title,
+        "description": finding.description + spec_abuse_intel,
+        "matched_content": finding.matched_content,
+        "cwe": finding.cwe,
         "owasp": "A03:2025",
-        "file": f.file,
-        "line_number": f.line_number,
-        "confidence": f.confidence,
-        "remediation": f.remediation,
-        "tags": list(f.tags) + [f.injection_type, "injection"],
+        "remediation": getattr(finding, "remediation", "See OWASP injection prevention guide."),
+        "tags": list(getattr(finding, "tags", [])) + [getattr(finding, "injection_type", "unknown"), "injection"],
         "scan_id": scan_id,
-        "language": f.language,
+        "language": getattr(finding, "language", "unknown"),
     }
 
 
@@ -514,7 +540,7 @@ def scan_injection_file_telemetry(
         "scan_id": scan_id,
         "file": filepath,
         "findings_count": len(findings),
-        "duration_ms": round(elapsed_ms, 2),
+        "duration_ms": float(round(float(elapsed_ms or 0), 2)),
         "timestamp": _time.time(),
     }
     if findings:
@@ -548,7 +574,8 @@ def scan_injection_directory_enterprise(
 
     root_path = Path(root)
     for fpath in root_path.rglob("*"):
-        if files_scanned >= max_files:
+        _fsc = int(files_scanned)
+        if _fsc >= int(max_files):
             break
         if fpath.is_dir() or any(skip in fpath.parts for skip in SKIP_DIRS):
             continue
@@ -568,7 +595,7 @@ def scan_injection_directory_enterprise(
                         on_finding(normalize_injection_finding(f, scan_id))
                     except Exception:
                         pass
-            files_scanned += 1
+            files_scanned = int(files_scanned) + 1 # type: ignore
         except (OSError, PermissionError):
             continue
 
@@ -578,7 +605,7 @@ def scan_injection_directory_enterprise(
         "root": root,
         "files_scanned": files_scanned,
         "findings_count": len(findings),
-        "duration_ms": round((_time.time() - start) * 1000, 2),
+        "duration_ms": float(f"{((_time.time() - start) * 1000.0):.2f}"),
         "severity_breakdown": {
             sev: sum(1 for f in findings if f.severity.lower() == sev)
             for sev in ["critical", "high", "medium", "low", "info"]

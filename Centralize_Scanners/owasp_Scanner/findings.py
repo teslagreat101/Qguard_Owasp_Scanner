@@ -1,5 +1,5 @@
 """
-Quantum Protocol v3.5 — Data Models
+Quantara Security — Data Models
 """
 
 from __future__ import annotations
@@ -10,9 +10,9 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from quantum_protocol.models.enums import (
+from .enums import (
     AlgoFamily, ComplianceFramework, ConfidenceLevel,
-    PQC_REPLACEMENTS, RiskLevel, COMPLIANCE_VIOLATIONS,
+    RiskLevel, COMPLIANCE_VIOLATIONS,
 )
 
 
@@ -22,7 +22,7 @@ def _utcnow() -> str:
 
 @dataclass(frozen=False)
 class CryptoFinding:
-    """A single cryptographic vulnerability or secret exposure finding."""
+    """A single security vulnerability or secret exposure finding."""
     id: str
     file: str
     language: str
@@ -36,7 +36,7 @@ class CryptoFinding:
     confidence: float
     confidence_level: ConfidenceLevel
     key_size: Optional[int]
-    hndl_relevant: bool
+    exposure_relevant: bool
     pattern_note: str
     migration: dict
     compliance_violations: list[str]
@@ -44,10 +44,10 @@ class CryptoFinding:
     cwe_id: Optional[str] = None
     cvss_estimate: Optional[float] = None
     remediation_effort: Optional[str] = None
-    secret_provider: Optional[str] = None        # NEW: e.g. "AWS", "Stripe"
-    secret_type: Optional[str] = None            # NEW: e.g. "API Key", "Password"
-    attack_surface: Optional[str] = None         # NEW: e.g. "cloud-infra", "payment"
-    is_secret: bool = False                       # NEW: quick filter flag
+    secret_provider: Optional[str] = None
+    secret_type: Optional[str] = None
+    attack_surface: Optional[str] = None
+    is_secret: bool = False
     tags: list[str] = field(default_factory=list)
     timestamp: str = field(default_factory=_utcnow)
 
@@ -61,7 +61,7 @@ class CryptoFinding:
     @staticmethod
     def generate_id(filepath: str, line: int, family: str) -> str:
         h = hashlib.sha256(f"{filepath}:{line}:{family}".encode()).hexdigest()[:16]
-        return f"QP-{h}"
+        return f"QS-{h}"
 
 
 CWE_MAP: dict[AlgoFamily, tuple[str, str]] = {
@@ -99,13 +99,11 @@ CWE_MAP: dict[AlgoFamily, tuple[str, str]] = {
 
 def estimate_remediation_effort(family: AlgoFamily) -> str:
     if family.is_secret:
-        return "low"   # secrets = rotate immediately, relatively fast
+        return "low"
     if family in (AlgoFamily.MD5, AlgoFamily.SHA1):
         return "low"
     if family in (AlgoFamily.HARDCODED_KEY, AlgoFamily.WEAK_RANDOM, AlgoFamily.AES_ECB):
         return "medium"
-    if family.is_quantum_broken:
-        return "high"
     return "medium"
 
 
@@ -116,10 +114,10 @@ class FileReport:
     findings_count: int
     critical_count: int
     high_count: int
-    secrets_count: int       # NEW
+    secrets_count: int
     risk_score: float
     findings: list[CryptoFinding]
-    has_pqc_adoption: bool
+    has_high_risk_findings: bool
 
 
 @dataclass
@@ -140,18 +138,16 @@ class ScanSummary:
     medium_count: int
     low_count: int
     info_count: int
-    hndl_count: int
-    pqc_ready_count: int
-    # NEW: Secrets summary
+    exposure_count: int
+    secure_algo_count: int
     secrets_count: int
     secrets_critical: int
     secrets_by_provider: dict[str, int]
     attack_surface_summary: dict[str, int]
-    # Scores
-    quantum_risk_score: float
-    crypto_agility_score: float
-    secrets_exposure_score: float    # NEW: 0–100
-    overall_security_score: float    # NEW: combined
+    crypto_risk_score: float
+    security_agility_score: float
+    secrets_exposure_score: float
+    overall_security_score: float
     languages_detected: list[str]
     compliance_summary: dict[str, int]
     findings: list[CryptoFinding]
@@ -172,20 +168,19 @@ class ScanSummary:
         rules: dict[str, dict] = {}
         results: list[dict] = []
         for f in self.findings:
-            rule_id = f"QP/{f.family.value.upper().replace('-','_').replace(' ','_').replace('/','_')}"
+            rule_id = f"QS/{f.family.value.upper().replace('-','_').replace(' ','_').replace('/','_')}"
             if rule_id not in rules:
-                repl = PQC_REPLACEMENTS.get(f.family, {})
                 cwe = CWE_MAP.get(f.family)
                 rule_def: dict[str, Any] = {
                     "id": rule_id,
                     "name": f.family.value,
-                    "shortDescription": {"text": f"{'Secret exposure' if f.is_secret else 'Crypto vulnerability'}: {f.family.value}"},
-                    "fullDescription": {"text": repl.get("notes", f.pattern_note)},
+                    "shortDescription": {"text": f"{'Secret exposure' if f.is_secret else 'Security vulnerability'}: {f.family.value}"},
+                    "fullDescription": {"text": f.pattern_note},
                     "defaultConfiguration": {"level": f.risk.sarif_level},
-                    "helpUri": "https://csrc.nist.gov/projects/post-quantum-cryptography" if not f.is_secret
+                    "helpUri": "https://owasp.org/www-project-top-ten/" if not f.is_secret
                                else "https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/",
                     "properties": {"tags": (["security", "secrets", "credentials"] if f.is_secret
-                                           else ["security", "cryptography", "quantum"])},
+                                           else ["security", "vulnerability", "owasp"])},
                 }
                 if cwe:
                     rule_def["relationships"] = [{
@@ -220,8 +215,8 @@ class ScanSummary:
             "version": "2.1.0",
             "runs": [{
                 "tool": {"driver": {
-                    "name": "Quantum Protocol Scanner",
-                    "semanticVersion": "3.5.0",
+                    "name": "Quantara Security Scanner",
+                    "semanticVersion": "4.0.0",
                     "rules": list(rules.values()),
                 }},
                 "results": results,
@@ -243,10 +238,10 @@ class ScanSummary:
                 "is_secret": f.is_secret,
                 "secret_provider": f.secret_provider or "",
                 "attack_surface": f.attack_surface or "",
-                "hndl": f.hndl_relevant,
+                "exposure_relevant": f.exposure_relevant,
                 "cwe": f.cwe_id or "",
                 "compliance": "; ".join(f.compliance_violations),
-                "migration": f.migration.get("kem") or f.migration.get("sign") or f.migration.get("replacement") or f.migration.get("action") or "",
+                "remediation": f.migration.get("action") or f.migration.get("replacement") or "",
                 "note": f.pattern_note,
             })
         return rows

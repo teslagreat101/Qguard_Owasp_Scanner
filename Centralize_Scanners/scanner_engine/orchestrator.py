@@ -1,16 +1,15 @@
 """
-Quantum Protocol v5.0 — Unified Scan Orchestrator
+Quantara Security v5.0 — Unified Scan Orchestrator
 
-Chains all four scanner systems into a single pipeline:
+Chains all merged scanner systems into a single pipeline:
   - Phase 1: Scanner_2 OWASP modules (misconfig, injection, frontend_js, etc.)
-  - Phase 2: Scanner_1 extended analyzers — ALL quantum_protocol analyzers
+  - Phase 2: Scanner_1 extended analyzers
   - Phase 3: New module — SSRF scanner
   - Phase 4: code_security_scanner — multi-agent semantic analysis
-  - Phase 5: Quantum PQC scanner — HNDL-relevant crypto vulnerability detection
-  - Phase 6: Quantara HTTP scanner — YAML-template-driven live web vulnerability scanner
+  - Phase 5: Quantara HTTP scanner — YAML-template-driven live web vulnerability scanner
               (XSS, SQLi, LFI, SSRF, SSTI, Command Injection, IDOR, CORS, JWT,
                security headers, backup files, debug endpoints, tech fingerprinting)
-  - Smart routing: URL→Quantara HTTP + live HTTP scan, GitHub→quantum_protocol repo scan,
+  - Smart routing: URL→Quantara HTTP + live HTTP scan, GitHub→repository scan,
                    local dir→code_security_scanner, code→code analysis
   - Finding deduplication across all phases
   - Unified finding normalization
@@ -44,14 +43,14 @@ _SCANNER2_DIR = os.path.join(_ROOT, "owasp_Scanner")
 if _SCANNER2_DIR not in sys.path:
     sys.path.insert(0, _SCANNER2_DIR)
 
-_SCANNER1_DIR = os.path.join(_ROOT, "quantum_protocol")
+_SCANNER1_DIR = os.path.join(_ROOT, "quantara_protocol")
 if _SCANNER1_DIR not in sys.path:
     sys.path.insert(0, _SCANNER1_DIR)
 
 # ── Import Scanner_2 flat modules ──
 from misconfig_engine import scan_misconfig_file, scan_misconfig_directory
 from injection_scanner import scan_injection_file, scan_injection_directory
-from frontend_js_analyzer import scan_frontend_file, scan_frontend_directory
+from quantara_js_analyzer import scan_frontend_file, scan_frontend_directory
 from endpoint_extractor import scan_file_endpoints, scan_directory_endpoints
 from auth_scanner import scan_auth_file, scan_auth_directory
 from broken_access import scan_access_file, scan_access_directory
@@ -63,17 +62,18 @@ from integrity_scanner import scan_integrity_file, scan_integrity_directory
 
 # ── Import ALL Scanner_1 (quantum_protocol) analyzers ──
 try:
-    from quantum_protocol.analyzers.logging_scanner import scan_logging_scanner
-    from quantum_protocol.analyzers.exception_scanner import scan_exception_scanner
-    from quantum_protocol.analyzers.sensitive_data_exposure import scan_sensitive_data
-    from quantum_protocol.core.engine import scan_local_directory as qp_scan_directory
-    from quantum_protocol.core.engine import scan_repository as qp_scan_repository
-    from quantum_protocol.models.enums import ScanMode
+    from quantara_protocol.analyzers.logging_scanner import scan_logging_scanner
+    from quantara_protocol.analyzers.exception_scanner import scan_exception_scanner
+    from quantara_protocol.analyzers.sensitive_data_exposure import scan_sensitive_data
+    from quantara_protocol.core.engine import scan_file as qp_scan_file
+    from quantara_protocol.core.engine import scan_local_directory as qp_scan_directory
+    from quantara_protocol.core.engine import scan_repository as qp_scan_repository
+    from quantara_protocol.models.enums import ScanMode
     _SCANNER1_AVAILABLE = True
-    logger.info("Scanner_1 (quantum_protocol) loaded successfully")
+    logger.info("Scanner_1 (quantara_protocol) loaded successfully")
 except ImportError as _qp_err:
     _SCANNER1_AVAILABLE = False
-    logger.warning(f"Scanner_1 quantum_protocol not available: {_qp_err}")
+    logger.warning(f"Scanner_1 quantara_protocol not available: {_qp_err}")
 
 # ── Import code_security_scanner (multi-agent semantic analysis) ──
 try:
@@ -110,19 +110,19 @@ except ImportError as _ent_err:
     _ENTERPRISE_AVAILABLE = False
     logger.warning(f"Quantara Enterprise feature modules not available: {_ent_err}")
 
-# ── Import PQSI Agents (Post-Quantum Security Intelligence) ──
+# ── Import NEO Intelligence Layer ──
 try:
-    from quantum_protocol.agents.pqc_fingerprint_agent import PQCFingerprintAgent
-    from quantum_protocol.agents.crypto_harvest_analyzer import CryptoHarvestAnalyzer
-    from quantum_protocol.agents.pqc_library_engine import PQCLibraryEngine
-    from quantum_protocol.agents.quantum_recon_agent import QuantumReconAgent
-    from quantum_protocol.intelligence.quantum_timeline import QuantumTimelineEngine
-    from quantum_protocol.core.engine import compute_qqsi_score
-    _PQSI_AVAILABLE = True
-    logger.info("PQSI agents (Post-Quantum Security Intelligence) loaded successfully")
-except ImportError as _pqsi_err:
-    _PQSI_AVAILABLE = False
-    logger.warning(f"PQSI agents not available: {_pqsi_err}")
+    from scanner_engine.neo_intelligence import (
+        NeoScanLoop, get_neo_scan_loop,
+        ScanPhase, ScanMode, NeoScanTarget, NeoScanResult,
+        get_intelligence_graph, get_spec_abuse_kb,
+        get_payload_generator, get_attack_brain, get_learning_memory,
+    )
+    _NEO_INTELLIGENCE_AVAILABLE = True
+    logger.info("NEO Intelligence Layer loaded successfully (5 layers + scan loop)")
+except ImportError as _neo_err:
+    _NEO_INTELLIGENCE_AVAILABLE = False
+    logger.warning(f"NEO Intelligence Layer not available: {_neo_err}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -172,9 +172,9 @@ class UnifiedFinding:
     subcategory: str = ""
     ssrf_type: str = ""
     finding_type: str = ""
-    scanner_source: str = ""   # "owasp", "quantum", "code_agent"
+    scanner_source: str = ""   # "owasp", "quantara", "code_agent"
     hndl_relevant: bool = False
-    quantum_risk: str = ""
+    quantara_risk: str = ""
     pqc_migration: str = ""
     agent_certainty: float = 0.0
     agent_verdict: str = ""
@@ -286,13 +286,6 @@ UNIFIED_MODULE_REGISTRY = {
         "description": "Red/Blue/Auditor agents with taint analysis, data flow, patch suggestions",
         "requires_code_scanner": True,
     },
-    # Phase 5: Quantum PQC Scanner
-    "quantum_pqc": {
-        "name": "Quantum PQC Vulnerability Scanner", "owasp": "Crypto-Agility", "phase": 5,
-        "scan_file": None, "scan_dir": None, "pattern_count": 200,
-        "description": "Quantum-vulnerable crypto, HNDL threats, PQC migration guidance",
-        "requires_scanner1": True,
-    },
     # Phase 6: Quantara HTTP Scanner (live URL scanning)
     "quantara_http": {
         "name": "Quantara HTTP Vulnerability Scanner", "owasp": "A01-A10:2021", "phase": 6,
@@ -345,30 +338,19 @@ UNIFIED_MODULE_REGISTRY = {
         "description": "Multi-LLM enrichment: TP/FP verdict, business impact, code remediation, attack narrative, POC fix — Gemini→Claude→GPT fallback chain",
         "requires_enterprise": True,
     },
-    # Phase 8: Post-Quantum Security Intelligence (PQSI)
-    "pqsi_fingerprint": {
-        "name": "PQC Fingerprint Agent", "owasp": "Crypto-Agility", "phase": 8,
-        "scan_file": None, "scan_dir": None, "pattern_count": 80,
-        "description": "Detects PQC deployments: CRYSTALS-Kyber/Dilithium, Falcon, SPHINCS+, BIKE, McEliece, hybrid TLS, oqsprovider, liboqs",
-        "requires_pqsi": True,
-    },
-    "pqsi_harvest": {
-        "name": "Crypto Harvest Analyzer", "owasp": "HNDL-Defense", "phase": 8,
-        "scan_file": None, "scan_dir": None, "pattern_count": 60,
-        "description": "Detects HNDL preparation: packet capture, TLS session logging, traffic mirroring, ciphertext storage, certificate scraping",
-        "requires_pqsi": True,
-    },
-    "pqsi_library": {
-        "name": "PQC Library Intelligence", "owasp": "Crypto-Agility", "phase": 8,
-        "scan_file": None, "scan_dir": None, "pattern_count": 40,
-        "description": "PQC library adoption scanning with Post-Quantum Adoption Index (0-100): liboqs, BoringSSL-PQ, wolfSSL, AWS-LC, CIRCL",
-        "requires_pqsi": True,
-    },
-    "pqsi_recon": {
-        "name": "Quantum Recon Detection", "owasp": "Threat-Intel", "phase": 8,
-        "scan_file": None, "scan_dir": None, "pattern_count": 50,
-        "description": "Detects quantum reconnaissance: mass cert enumeration, crypto inventory scanning, TLS probing, encrypted dataset indexing",
-        "requires_pqsi": True,
+    # Phase 9: NEO Intelligence Layer
+    "neo_intelligence": {
+        "name": "NEO Intelligence Engine", "owasp": "A01-A10:2025", "phase": 9,
+        "scan_file": None, "scan_dir": None, "pattern_count": 500,
+        "description": (
+            "Autonomous 5-layer intelligence: Application Intelligence Graph, "
+            "Spec Abuse Knowledge Base (16 patterns, 102 payloads), "
+            "Self-Learning Payload Generator (DNA-based mutations, WAF evasion), "
+            "Attack Simulation Brain (vulnerability chaining, BFS attack paths), "
+            "Continuous Learning Memory (cross-scan intelligence). "
+            "MAP→TRACE→REASON→HYPOTHESIZE→EXPLOIT→VERIFY→LEARN"
+        ),
+        "requires_neo": True,
     },
 }
 
@@ -379,70 +361,86 @@ UNIFIED_MODULE_REGISTRY = {
 
 def normalize_finding(finding: Any, module_key: str) -> UnifiedFinding:
     """Normalize any scanner finding into a UnifiedFinding."""
+    if isinstance(finding, UnifiedFinding):
+        return finding
+        
     meta = UNIFIED_MODULE_REGISTRY.get(module_key, {})
     now = datetime.now(timezone.utc).isoformat()
 
+    # Helper for robust attribute/dict access
+    def val(attr: str, default: Any = "") -> Any:
+        if finding is None: return default
+        if isinstance(finding, dict):
+            res = finding.get(attr, default)
+            return res if res is not None else default
+        res = getattr(finding, attr, default)
+        return res if res is not None else default
+
     scanner_source = "owasp"
-    if module_key in ("logging", "exception", "sensitive_data", "quantum_pqc"):
-        scanner_source = "quantum"
+    if module_key in ("logging", "exception", "sensitive_data"):
+        scanner_source = "quantara"
     elif module_key == "code_agent":
         scanner_source = "code_agent"
-    elif module_key.startswith("pqsi_"):
-        scanner_source = "pqsi"
     elif module_key in (
         "quantara_http", "quantara_crawler", "quantara_auth",
         "quantara_fp_reducer", "quantara_oast", "quantara_chains", "quantara_ai",
+        "neo_intelligence"
     ):
-        scanner_source = getattr(finding, "scanner_source", "quantara")
+        scanner_source = val("scanner_source", "quantara")
 
     result = UnifiedFinding(
-        id=getattr(finding, "id", "") or "",
-        file=getattr(finding, "file", "") or "",
-        line_number=getattr(finding, "line_number", 0) or 0,
-        severity=(getattr(finding, "severity", "info") or "info").lower(),
-        title=getattr(finding, "title", "") or "",
-        description=getattr(finding, "description", "") or "",
-        matched_content=getattr(finding, "matched_content", "") or getattr(finding, "matched_value", "") or "",
-        category=getattr(finding, "category", "") or meta.get("owasp", ""),
-        cwe=getattr(finding, "cwe", "") or getattr(finding, "cwe_id", "") or "",
-        remediation=getattr(finding, "remediation", "") or "",
-        confidence=getattr(finding, "confidence", 1.0) or 1.0,
+        id=val("id", "") or _gen_id(),
+        file=val("file", ""),
+        line_number=int(val("line_number", 0)),
+        severity=(str(val("severity", "info")) or "info").lower(),
+        title=val("title", ""),
+        description=val("description", ""),
+        matched_content=val("matched_content", "") or val("matched_value", ""),
+        category=val("category", "") or meta.get("owasp", ""),
+        cwe=val("cwe", "") or val("cwe_id", ""),
+        remediation=val("remediation", ""),
+        confidence=float(val("confidence", 1.0)),
         module=module_key,
         module_name=meta.get("name", module_key),
         owasp=meta.get("owasp", ""),
-        language=getattr(finding, "language", "") or "",
-        tags=list(getattr(finding, "tags", []) or []),
+        language=val("language", ""),
+        tags=list(val("tags", []) or []),
         timestamp=now,
-        injection_type=getattr(finding, "injection_type", "") or "",
-        subcategory=getattr(finding, "subcategory", "") or "",
-        ssrf_type=getattr(finding, "ssrf_type", "") or "",
-        finding_type=getattr(finding, "finding_type", "") or "",
+        injection_type=val("injection_type", ""),
+        subcategory=val("subcategory", ""),
+        ssrf_type=val("ssrf_type", ""),
+        finding_type=val("finding_type", ""),
         scanner_source=scanner_source,
     )
 
     # Endpoint extractor format
-    if hasattr(finding, "url") and not result.title:
-        result.title = f"Endpoint: {finding.url}"
-        result.description = getattr(finding, "description", "") or f"{getattr(finding, 'endpoint_type', 'unknown')} endpoint discovered"
-        result.severity = getattr(finding, "risk_level", "info").lower()
-        result.file = getattr(finding, "file", "")
-        result.line_number = getattr(finding, "line_number", 0)
+    if (hasattr(finding, "url") or (isinstance(finding, dict) and "url" in finding)) and not result.title:
+        url_val = val("url")
+        result.title = f"Endpoint: {url_val}"
+        result.description = val("description", "") or f"{val('endpoint_type', 'unknown')} endpoint discovered"
+        result.severity = str(val("risk_level", "info")).lower()
+        result.file = val("file", "")
+        result.line_number = int(val("line_number", 0))
 
-    # Scanner_1 CryptoFinding format
-    if hasattr(finding, "risk") and hasattr(finding, "family"):
-        risk_val = getattr(finding.risk, "value", str(finding.risk))
-        result.severity = risk_val.lower() if risk_val else "info"
-        result.title = getattr(finding, "pattern_note", "") or getattr(finding, "algorithm", "")
-        result.matched_content = getattr(finding, "line_content", "") or ""
-        result.hndl_relevant = bool(getattr(finding, "hndl_relevant", False))
-        if hasattr(finding, "migration") and isinstance(finding.migration, dict):
-            result.remediation = finding.migration.get("action", "")
-            result.pqc_migration = str(finding.migration)
+    # Crypto Scanner format
+    if (hasattr(finding, "risk") or (isinstance(finding, dict) and "risk" in finding)) and \
+       (hasattr(finding, "family") or (isinstance(finding, dict) and "family" in finding)):
+        result.severity = str(val("risk", "info")).lower()
+        result.title = f"Crypto: {val('algorithm', 'unknown')} {val('family', 'unknown')}"
+        result.finding_type = "cryptographic"
+        result.tags.append("crypto")
+        # Original Scanner_1 CryptoFinding format fields
+        result.matched_content = val("line_content", "") or ""
+        result.hndl_relevant = bool(val("hndl_relevant", False))
+        migration_data = val("migration", {})
+        if isinstance(migration_data, dict):
+            result.remediation = migration_data.get("action", "")
+            result.pqc_migration = str(migration_data)
             if not result.cwe:
-                result.cwe = finding.migration.get("cwe", "")
-        result.quantum_risk = str(getattr(finding, "risk", ""))
+                result.cwe = migration_data.get("cwe", "")
+        result.quantara_risk = str(val("risk", ""))
         if scanner_source != "pqsi":
-            result.scanner_source = "quantum"
+            result.scanner_source = "quantara"
         # PQSI enrichment fields
         if hasattr(finding, "data_longevity_estimate") and finding.data_longevity_estimate:
             result.data_longevity_estimate = str(finding.data_longevity_estimate)
@@ -596,9 +594,9 @@ def run_module_scan(module_key: str, target: str, scan_type: str = "directory", 
     Execute a single scanner module and return raw findings.
 
     Smart routing:
-      - GitHub URL   → quantum_protocol.scan_repository()
+      - GitHub URL   → quantara_protocol.scan_repository()
       - Live HTTP URL→ fetch content + OWASP module scan
-      - directory    → OWASP dir scan + optional code_agent/quantum_pqc
+      - directory    → OWASP dir scan + optional code_agent/quantara_pqc
       - code         → inline content analysis
     """
     meta = UNIFIED_MODULE_REGISTRY.get(module_key)
@@ -613,10 +611,6 @@ def run_module_scan(module_key: str, target: str, scan_type: str = "directory", 
         logger.warning(f"Skipping {module_key} — code_security_scanner not available")
         return []
 
-    if meta.get("requires_pqsi") and not _PQSI_AVAILABLE:
-        logger.warning(f"Skipping {module_key} — PQSI agents not available")
-        return []
-
     if meta.get("requires_quantara") and not _QUANTARA_AVAILABLE:
         logger.warning(f"Skipping {module_key} — quantara_scanner not available")
         return []
@@ -629,23 +623,9 @@ def run_module_scan(module_key: str, target: str, scan_type: str = "directory", 
     else:
         effective_scan_type = detect_scan_target_type(target)
 
-    # GitHub URLs → quantum_protocol repo scan
+    # GitHub URLs → quantara_protocol repo scan
     if effective_scan_type == "github" or _GITHUB_PATTERN.match(target or ""):
         return _run_github_scan(module_key, target)
-
-    # PQSI agents — Phase 8
-    if module_key.startswith("pqsi_") and meta.get("requires_pqsi"):
-        if not _PQSI_AVAILABLE:
-            return []
-        return _run_pqsi_agent(module_key, target, effective_scan_type)
-
-    # quantum_pqc — directory (ScanMode.QUANTUM) or GitHub repo
-    if module_key == "quantum_pqc":
-        if effective_scan_type == "directory":
-            return _run_quantum_pqc_dir(target)
-        if effective_scan_type == "github":
-            return _run_quantum_pqc_github(target)
-        return []
 
     # code_agent — multi-agent semantic analysis
     if module_key == "code_agent":
@@ -703,49 +683,10 @@ def run_module_scan(module_key: str, target: str, scan_type: str = "directory", 
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PQSI_AGENT_MAP = {
-    "pqsi_fingerprint": "PQCFingerprintAgent",
-    "pqsi_harvest": "CryptoHarvestAnalyzer",
-    "pqsi_library": "PQCLibraryEngine",
-    "pqsi_recon": "QuantumReconAgent",
-}
 
 
-def _run_pqsi_agent(module_key: str, target: str, scan_type: str) -> list:
-    """Route PQSI module to the appropriate agent class."""
-    if not _PQSI_AVAILABLE:
-        return []
 
-    agent_cls_name = _PQSI_AGENT_MAP.get(module_key)
-    if not agent_cls_name:
-        logger.warning(f"Unknown PQSI module: {module_key}")
-        return []
 
-    # Resolve agent class
-    agent_classes = {
-        "PQCFingerprintAgent": PQCFingerprintAgent,
-        "CryptoHarvestAnalyzer": CryptoHarvestAnalyzer,
-        "PQCLibraryEngine": PQCLibraryEngine,
-        "QuantumReconAgent": QuantumReconAgent,
-    }
-    agent_cls = agent_classes.get(agent_cls_name)
-    if not agent_cls:
-        return []
-
-    try:
-        agent = agent_cls()
-        if scan_type == "directory" and os.path.isdir(target):
-            logger.info(f"[{module_key}] Running PQSI agent on directory: {target}")
-            return agent.scan_directory(target)
-        elif scan_type == "code":
-            logger.info(f"[{module_key}] Running PQSI agent on inline code")
-            return agent.scan_file(target, "paste_input.py", "python")
-        else:
-            logger.debug(f"[{module_key}] PQSI agent skipped for scan_type={scan_type}")
-            return []
-    except Exception as e:
-        logger.error(f"PQSI agent {module_key} failed: {e}")
-        return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -756,9 +697,9 @@ _GITHUB_FAILURE_CACHE_TTL = 60  # seconds
 
 
 def _run_github_scan(module_key: str, repo_url: str) -> list:
-    """Route GitHub URL to quantum_protocol.scan_repository()."""
+    """Route GitHub URL to repository.scan_repository()."""
     if not _SCANNER1_AVAILABLE:
-        logger.warning(f"Cannot scan GitHub repo — quantum_protocol not available")
+        logger.warning(f"Cannot scan GitHub repo — scanner primary engine not available")
         return []
 
     # Check if we recently failed to scan this URL (prevent duplicate error logging)
@@ -783,15 +724,7 @@ def _run_github_scan(module_key: str, repo_url: str) -> list:
         return []
 
 
-def _run_quantum_pqc_dir(target: str) -> list:
-    if not _SCANNER1_AVAILABLE:
-        return []
-    try:
-        summary = qp_scan_directory(target, scan_mode=ScanMode.QUANTUM)
-        return summary.findings if hasattr(summary, "findings") else []
-    except Exception as e:
-        logger.error(f"Quantum PQC dir scan failed: {e}")
-        return []
+
 
 
 def _run_code_agent_dir(target: str) -> list:
@@ -862,20 +795,6 @@ def _run_scanner1_code(module_key: str, content: str) -> list:
     if not scanner_fn:
         return []
     return scanner_fn(content, "paste_input.py", "python", ScanMode.FULL)
-
-
-def _run_quantum_pqc_github(repo_url: str) -> list:
-    """Run Quantum PQC scan against a GitHub repository (ScanMode.QUANTUM)."""
-    if not _SCANNER1_AVAILABLE:
-        return []
-    try:
-        logger.info(f"[quantum_pqc] PQC scan on GitHub repo: {repo_url}")
-        token = os.getenv("GITHUB_TOKEN")
-        summary = qp_scan_repository(repo_url, github_token=token, scan_mode=ScanMode.QUANTUM)
-        return summary.findings if hasattr(summary, "findings") else []
-    except Exception as e:
-        logger.error(f"Quantum PQC GitHub scan failed for {repo_url}: {e}")
-        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1556,6 +1475,15 @@ def _scan_url_live(url: str, module_key: str) -> list:
         logger.error(f"URL live scan failed for {url}: {e}")
         return []
 
+    # Feed the fetched page into NEO intelligence graph
+    if _NEO_INTELLIGENCE_AVAILABLE:
+        try:
+            graph = get_intelligence_graph()
+            graph.ingest_endpoint(url_pattern=final_url, method="GET", technology="")
+            graph.infer_data_flows_from_code(html, final_url)
+        except Exception:
+            pass
+
     if module_key == "misconfig":
         findings = _check_security_headers(final_url, headers)
         findings += _check_http_enforcement(url)
@@ -1564,7 +1492,33 @@ def _scan_url_live(url: str, module_key: str) -> list:
     elif module_key == "auth":
         return _check_cookies(final_url, headers)
     elif module_key == "injection":
-        return [f for f in _check_html_content(final_url, html) if f.module == "injection"]
+        findings = [f for f in _check_html_content(final_url, html) if f.module == "injection"]
+        # Enrich with NEO spec-abuse pattern detection in the response
+        if _NEO_INTELLIGENCE_AVAILABLE:
+            try:
+                kb = get_spec_abuse_kb()
+                # Check if response contains signs of injection vulnerability
+                for pattern in kb.get_patterns_for_owasp("A05:2025"):
+                    for sig in pattern.detection_signatures:
+                        if re.search(sig, html, re.IGNORECASE):
+                            findings.append(UnifiedFinding(
+                                id=_gen_id(),
+                                file=final_url,
+                                severity=pattern.severity,
+                                title=f"NEO Spec Abuse: {pattern.name}",
+                                description=pattern.description[:200],
+                                category=pattern.owasp_mapping,
+                                confidence=pattern.confidence * 0.7,
+                                module="injection",
+                                module_name="Injection Scanner + NEO Spec Abuse KB",
+                                owasp=pattern.owasp_mapping,
+                                tags=["neo-intelligence", "spec-abuse"] + pattern.tags,
+                            ))
+                            kb.record_success(pattern.id)
+                            break
+            except Exception:
+                pass
+        return findings
     elif module_key == "frontend_js":
         return _check_js_content(final_url, html)
     elif module_key == "endpoint":
@@ -1581,9 +1535,16 @@ def _scan_url_live(url: str, module_key: str) -> list:
     elif module_key == "logging":
         # Logging module: check for verbose errors and audit logging gaps
         return [f for f in _check_html_content(final_url, html) if "disclosure" in f.title.lower()]
-    elif module_key in ("ssrf", "supply_chain", "cloud", "integrity", "exception"):
-        # These modules don't apply to live URL scans
-        return []
+    elif module_key == "ssrf":
+        return scan_ssrf_file(html, "remote_page.html")
+    elif module_key == "supply_chain":
+        return scan_supply_chain_file(html, "remote_page.html")
+    elif module_key == "cloud":
+        return scan_cloud_file(url, "remote_page.html")
+    elif module_key == "integrity":
+        return scan_integrity_file(html, "remote_page.html")
+    elif module_key == "exception":
+        return scan_exception_scanner(html, "remote_page.html")
     else:
         # Fallback: run file scanner on fetched content
         meta = UNIFIED_MODULE_REGISTRY.get(module_key)
@@ -1599,6 +1560,9 @@ def _run_quantara_http_scan(url: str) -> list:
     """
     Run the Quantara HTTP scanner against a live URL.
     Returns list of QuantaraWebFinding objects (duck-type compatible with normalize_finding).
+
+    When NEO Intelligence is available, populates the intelligence graph
+    from the Quantara fingerprint results for downstream attack surface analysis.
     """
     if not _QUANTARA_AVAILABLE:
         return []
@@ -1606,6 +1570,35 @@ def _run_quantara_http_scan(url: str) -> list:
         logger.info(f"[quantara_http] Starting Quantara HTTP scan: {url}")
         findings = scan_url_with_quantara(url, module_key="quantara_http")
         logger.info(f"[quantara_http] Quantara scan complete: {len(findings)} findings on {url}")
+
+        # Feed Quantara findings into the NEO Intelligence Graph
+        if _NEO_INTELLIGENCE_AVAILABLE and findings:
+            try:
+                graph = get_intelligence_graph()
+                for f in findings:
+                    endpoint = getattr(f, "url", "") or getattr(f, "endpoint", "") or url
+                    graph.ingest_endpoint(
+                        url_pattern=endpoint,
+                        method=getattr(f, "method", "GET"),
+                        technology=getattr(f, "technology", ""),
+                    )
+                # Record successful payloads for learning
+                memory = get_learning_memory()
+                for f in findings:
+                    payload = getattr(f, "matched_content", "") or getattr(f, "payload", "")
+                    if payload and getattr(f, "severity", "info") in ("critical", "high", "medium"):
+                        category = getattr(f, "category", "").lower()
+                        cat_key = "xss" if "xss" in category else \
+                                  "sqli" if "sql" in category else \
+                                  "ssrf" if "ssrf" in category else \
+                                  "ssti" if "template" in category else "generic"
+                        memory.remember_successful_payload(
+                            payload=payload, category=cat_key,
+                            context="url_param", technology=getattr(f, "technology", ""),
+                        )
+            except Exception as _neo_enrich_err:
+                logger.debug(f"NEO enrichment from Quantara results: {_neo_enrich_err}")
+
         return findings
     except Exception as e:
         logger.error(f"[quantara_http] Quantara scan failed for {url}: {e}")
@@ -1618,7 +1611,7 @@ def _fetch_url_content(url: str) -> Optional[str]:
     try:
         import requests
         response = requests.get(url, timeout=15, verify=False, headers={
-            "User-Agent": "Quantum-Protocol-Security-Scanner/5.0"
+            "User-Agent": "Helix-Scanner/5.0"
         })
         header_block = "\n".join(
             f"# HTTP-Header: {k}: {v}" for k, v in response.headers.items()
@@ -1666,11 +1659,6 @@ SCAN_PROFILES = {
         "description": "API-focused scan with Quantara HTTP templates",
         "modules": ["quantara_http", "api_security", "injection", "auth", "access_control", "ssrf"],
     },
-    "pqc": {
-        "name": "Quantum PQC Scan",
-        "description": "Quantum-vulnerable cryptography and PQC readiness",
-        "modules": ["quantum_pqc", "sensitive_data", "logging"],
-    },
     "code-deep": {
         "name": "Deep Code Analysis",
         "description": "Multi-agent semantic analysis with taint tracking",
@@ -1680,11 +1668,6 @@ SCAN_PROFILES = {
         "name": "Quantara HTTP Scan",
         "description": "Pure Quantara-template-driven live HTTP vulnerability scan",
         "modules": ["quantara_http"],
-    },
-    "pqsi": {
-        "name": "Quantum Security Intelligence",
-        "description": "Full PQSI assessment: PQC adoption, HNDL detection, quantum recon, timeline analysis",
-        "modules": ["quantum_pqc", "pqsi_fingerprint", "pqsi_harvest", "pqsi_library", "pqsi_recon", "sensitive_data"],
     },
 }
 
@@ -1701,8 +1684,7 @@ def get_available_modules() -> list[dict]:
             "available": (
                 (not m.get("requires_scanner1") or _SCANNER1_AVAILABLE) and
                 (not m.get("requires_code_scanner") or _CODE_SCANNER_AVAILABLE) and
-                (not m.get("requires_quantara") or _QUANTARA_AVAILABLE) and
-                (not m.get("requires_pqsi") or _PQSI_AVAILABLE)
+                (not m.get("requires_quantara") or _QUANTARA_AVAILABLE)
             ),
         }
         for k, m in UNIFIED_MODULE_REGISTRY.items()
@@ -1875,3 +1857,299 @@ def detect_injection_context(response_body: str, reflected_value: str | None = N
         except Exception:
             pass
     return {"context": "unknown", "confidence": 0.0}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEO Intelligence Integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def run_neo_intelligence(
+    target: str,
+    scan_type: str = "directory",
+    findings: list | None = None,
+    technology: str = "",
+    framework: str = "",
+    waf_detected: str = "",
+) -> dict:
+    """
+    Execute the NEO Intelligence scan loop alongside standard modules.
+
+    Args:
+        target: URL, directory, or repo URL.
+        scan_type: "url", "directory", "github", "code".
+        findings: Existing findings from standard modules to enrich.
+        technology: Detected technology stack.
+        framework: Detected framework.
+        waf_detected: Detected WAF type (if any).
+
+    Returns:
+        NeoScanResult as dict with attack chains, surfaces, hypotheses, etc.
+    """
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        logger.warning("NEO Intelligence not available — skipping")
+        return {"error": "NEO Intelligence not available"}
+
+    try:
+        loop = get_neo_scan_loop()
+
+        # Map scan types to NeoScanTarget
+        mode = ScanMode.ACTIVE_SAFE if scan_type in ("url",) else ScanMode.PASSIVE
+        neo_target = NeoScanTarget(
+            url=target if scan_type in ("url", "github") else "",
+            repository_path=target if scan_type in ("directory", "code") else "",
+            github_url=target if scan_type == "github" else "",
+            scan_mode=mode,
+            technology=technology,
+            framework=framework,
+            waf_detected=waf_detected,
+        )
+
+        # Convert UnifiedFinding dicts to simple dicts for NEO
+        external_findings = []
+        for f in (findings or []):
+            if isinstance(f, dict):
+                external_findings.append(f)
+            elif hasattr(f, "to_dict"):
+                external_findings.append(f.to_dict())
+            else:
+                external_findings.append({
+                    "title": getattr(f, "title", ""),
+                    "severity": getattr(f, "severity", "info"),
+                    "category": getattr(f, "category", ""),
+                    "confidence": getattr(f, "confidence", 0.5),
+                    "endpoint": getattr(f, "file", ""),
+                    "parameter": getattr(f, "matched_content", ""),
+                })
+
+        result = await loop.execute(neo_target, external_findings=external_findings)
+        return result.to_dict()
+
+    except Exception as e:
+        logger.error(f"NEO Intelligence execution error: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+def get_neo_intelligence_summary() -> dict:
+    """Get current NEO intelligence system state and statistics."""
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        return {"available": False}
+
+    try:
+        loop = get_neo_scan_loop()
+        return {
+            "available": True,
+            "graph_stats": loop.graph.get_stats(),
+            "knowledge_base_stats": loop.kb.get_stats(),
+            "payload_generator_stats": loop.payload_gen.get_stats(),
+            "attack_brain_stats": loop.attack_brain.get_stats(),
+            "learning_memory_stats": loop.memory.get_stats(),
+        }
+    except Exception as e:
+        return {"available": True, "error": str(e)}
+
+
+def get_neo_smart_payloads(
+    category: str,
+    context: str = "",
+    technology: str = "",
+    waf_evasion_level: int = 0,
+    max_payloads: int = 20,
+) -> list[str]:
+    """
+    Get smart payloads from the NEO Payload Generator + Spec Abuse KB.
+    Used by enhanced OWASP modules for intelligent payload selection.
+
+    Maps attack categories to the correct OWASP spec-abuse patterns:
+        ssrf         → A01:2025 (Broken Access Control)
+        sqli/xss/ssti/cmdi → A05:2025 (Injection)
+        jwt/auth     → A07:2025 (Auth Failures)
+        deserialize  → A08:2025 (Integrity Failures)
+        race_condition→ A10:2025 (Exception Handling)
+    """
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        return []
+
+    try:
+        gen = get_payload_generator()
+        kb = get_spec_abuse_kb()
+        memory = get_learning_memory()
+
+        payloads: list[str] = []
+
+        # 1. Recall previously successful payloads from memory
+        recalled = memory.recall_payloads(category, technology=technology, limit=5)
+        payloads.extend(recalled)
+
+        # 2. Spec abuse payloads — map category to correct OWASP code
+        _CATEGORY_TO_OWASP = {
+            "ssrf": "A01:2025", "idor": "A01:2025", "bac": "A01:2025",
+            "sqli": "A05:2025", "xss": "A05:2025", "ssti": "A05:2025",
+            "cmdi": "A05:2025", "xxe": "A05:2025", "crlf": "A05:2025",
+            "jwt": "A07:2025", "auth": "A07:2025",
+            "deserialize": "A08:2025", "integrity": "A08:2025",
+            "race_condition": "A10:2025",
+        }
+        owasp_code = _CATEGORY_TO_OWASP.get(category, "A05:2025")
+
+        if category == "ssrf":
+            spec_payloads = kb.get_ssrf_bypass_payloads()
+            payloads.extend(spec_payloads[:10])
+        else:
+            patterns = kb.get_patterns_for_owasp(owasp_code)
+            for p in patterns[:5]:
+                payloads.extend(p.payload_templates[:5])
+
+        # 3. Framework-specific payloads if technology is known
+        if technology:
+            fw_payloads = kb.get_framework_specific_payloads(technology)
+            payloads.extend(fw_payloads[:5])
+
+        # 4. Mutated payloads from the self-learning generator
+        generated = gen.generate_payloads(
+            category=category,
+            context=context,
+            technology=technology,
+            waf_evasion_level=waf_evasion_level,
+            max_payloads=max(5, max_payloads - len(payloads)),
+        )
+        payloads.extend([pc.payload for pc in generated])
+
+        # Deduplicate and limit
+        seen: set[str] = set()
+        unique: list[str] = []
+        for p in payloads:
+            if p not in seen:
+                seen.add(p)
+                unique.append(p)
+        return unique[:max_payloads]
+
+    except Exception as e:
+        logger.debug(f"NEO smart payload error: {e}")
+        return []
+
+
+def neo_record_successful_exploit(
+    payload: str,
+    category: str,
+    context: str = "",
+    technology: str = "",
+    waf_bypassed: bool = False,
+):
+    """Record a successful exploit in NEO learning memory."""
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        return
+    try:
+        memory = get_learning_memory()
+        memory.remember_successful_payload(
+            payload=payload,
+            category=category,
+            context=context,
+            technology=technology,
+            waf_bypassed=waf_bypassed,
+        )
+    except Exception:
+        pass
+
+
+def neo_ingest_endpoints(
+    endpoints: list[dict],
+    technology: str = "",
+    framework: str = "",
+) -> dict:
+    """
+    Feed discovered endpoints into the NEO Intelligence Graph.
+    Called after the endpoint extractor module completes.
+
+    Each endpoint dict should have: url, method, auth_required, parameters (optional).
+    Returns graph stats after ingestion.
+    """
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        return {"ingested": 0}
+
+    try:
+        graph = get_intelligence_graph()
+        ingested = 0
+        for ep in endpoints:
+            url = ep.get("url", ep.get("endpoint", ep.get("file", "")))
+            if not url:
+                continue
+            method = ep.get("method", "GET")
+            auth_req = ep.get("auth_required", False)
+            roles = ep.get("roles", [])
+            params = ep.get("parameters", None)
+
+            graph.ingest_endpoint(
+                url_pattern=url,
+                method=method,
+                auth_required=auth_req,
+                roles=roles,
+                parameters=params,
+                technology=technology,
+            )
+            ingested += 1
+
+        return {"ingested": ingested, "graph_stats": graph.get_stats()}
+    except Exception as e:
+        logger.debug(f"NEO endpoint ingestion error: {e}")
+        return {"ingested": 0, "error": str(e)}
+
+
+def neo_ingest_findings_for_chaining(findings: list[dict]) -> dict:
+    """
+    Feed normalized findings into the NEO Attack Simulation Brain
+    to discover multi-step attack chains.
+
+    Returns discovered chains and hypotheses.
+    """
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        return {"chains": [], "hypotheses": []}
+
+    try:
+        brain = get_attack_brain()
+        brain.ingest_findings(findings)
+        chains = brain.discover_chains()
+        paths = brain.discover_attack_paths()
+        hypotheses = brain.generate_hypotheses()
+
+        return {
+            "chains": [c.to_dict() for c in chains[:20]],
+            "paths": [p.to_dict() for p in paths[:10]],
+            "hypotheses": hypotheses,
+            "stats": brain.get_stats(),
+        }
+    except Exception as e:
+        logger.debug(f"NEO attack chaining error: {e}")
+        return {"chains": [], "hypotheses": [], "error": str(e)}
+
+
+def neo_compute_attack_surfaces() -> dict:
+    """
+    Compute attack surfaces from the current Intelligence Graph state.
+    Returns OWASP-mapped attack surface analysis.
+    """
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        return {}
+
+    try:
+        graph = get_intelligence_graph()
+        surfaces = graph.compute_attack_surfaces()
+        return {k: v.to_dict() for k, v in surfaces.items()}
+    except Exception as e:
+        logger.debug(f"NEO attack surface error: {e}")
+        return {"error": str(e)}
+
+
+def neo_get_learning_memory_stats() -> dict:
+    """Get the continuous learning memory statistics."""
+    if not _NEO_INTELLIGENCE_AVAILABLE:
+        return {"available": False}
+
+    try:
+        memory = get_learning_memory()
+        return {
+            "available": True,
+            **memory.get_stats(),
+            "trending_vulnerabilities": memory.get_trending_vulnerabilities(days=30),
+        }
+    except Exception as e:
+        return {"available": True, "error": str(e)}

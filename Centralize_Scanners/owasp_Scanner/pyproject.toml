@@ -3,16 +3,16 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
-name = "quantum-protocol-scanner"
-version = "3.0.0"
-description = "Enterprise cryptographic security scanner for post-quantum readiness"
+name = "quantara-security-scanner"
+version = "4.0.0"
+description = "Enterprise security vulnerability and secret exposure scanner"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
-authors = [{name = "Quantum Protocol Team"}]
-keywords = ["cryptography", "security", "quantum", "pqc", "scanner", "sast"]
+authors = [{name = "Quantara Security Team"}]
+keywords = ["security", "vulnerability", "scanner", "sast", "secrets", "owasp"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "License :: OSI Approved :: Apache Software License",
@@ -22,7 +22,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Security",
-    "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Quality Assurance",
 ]
 
@@ -42,10 +41,10 @@ dev = [
 ]
 
 [project.scripts]
-quantum-scanner = "quantum_protocol.cli:main"
+quantara-scanner = "quantara_protocol.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["quantum_protocol*"]
+include = ["quantara_protocol*"]
 
 [tool.ruff]
 target-version = "py310"

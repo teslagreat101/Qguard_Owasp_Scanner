@@ -112,43 +112,63 @@ async def get_current_user(
     return user
 
 async def get_current_firebase_user(
-    credentials: HTTPAuthorizationCredentials = Security(security)
+    request: Request
 ) -> Dict[str, Any]:
-    token = credentials.credentials
+    import sys
+    # print(f"DEBUG: Auth attempt for {request.url.path}", flush=True)
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    
+    if not token:
+        token = request.query_params.get("token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authentication Token")
+    
     try:
+        # print(f"DEBUG: Verifying token (len={len(token)})...", flush=True)
         decoded_token = firebase_auth.verify_id_token(token)
-        uid = decoded_token.get("uid")
-        email = decoded_token.get("email")
-        
-        db = get_db_session()
-        try:
-            user = db.query(User).filter(User.firebase_uid == uid).first()
-            if not user:
-                user = db.query(User).filter(User.email == email).first()
-                if user:
-                    user.firebase_uid = uid
-                else:
-                    user = User(
-                        email=email,
-                        username=email,
-                        firebase_uid=uid,
-                        subscription_tier=SubscriptionTier.FREE,
-                        hashed_password="FIREBASE_AUTHED",
-                        is_active=True,
-                    )
-                    db.add(user)
-                db.commit()
-                db.refresh(user)
-            decoded_token["local_user_id"] = user.id
-        finally:
-            db.close()
-            
-        return decoded_token
     except Exception as e:
-        import traceback
-        print(f"DEBUG: Firebase token verification failed: {e}")
-        # traceback.print_exc()
-        raise HTTPException(status_code=401, detail=f"Firebase Error: {str(e)}")
+        print(f"ERROR: Firebase token verification failed: {str(e)}", flush=True)
+        raise HTTPException(status_code=401, detail=f"Invalid Firebase Token: {str(e)}")
+
+    uid = decoded_token.get("uid")
+    email = decoded_token.get("email")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Token missing UID claim")
+
+    print(f"DEBUG: Firebase verified: {email} ({uid})")
+    
+    db = get_db_session()
+    try:
+        user = db.query(User).filter(User.firebase_uid == uid).first()
+        if not user:
+            user = db.query(User).filter(User.email == email).first()
+            if user:
+                user.firebase_uid = uid
+            else:
+                user = User(
+                    email=email,
+                    username=email,
+                    firebase_uid=uid,
+                    subscription_tier=SubscriptionTier.FREE,
+                    hashed_password="FIREBASE_AUTHED",
+                    is_active=True,
+                )
+                db.add(user)
+            db.commit()
+            db.refresh(user)
+        decoded_token["local_user_id"] = user.id
+        # print(f"DEBUG: Authenticated {email} ({uid})", flush=True)
+    except Exception as e:
+        print(f"ERROR: Local user lookup failed for {uid}: {str(e)}", flush=True)
+        raise
+    finally:
+        db.close()
+        
+    return decoded_token
 
 async def get_user_subscription(
     firebase_user: Dict[str, Any] = Depends(get_current_firebase_user)

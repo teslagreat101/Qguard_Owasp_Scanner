@@ -48,6 +48,17 @@ class SubscriptionOverrideRequest(BaseModel):
     scan_limit: Optional[int] = None
     reason: str
 
+class SubscriptionExtendRequest(BaseModel):
+    days: int = Field(ge=1, le=365, description="Number of days to extend")
+    reason: str = ""
+
+class ChangeTierRequest(BaseModel):
+    tier: SubscriptionTier
+    reason: str = ""
+
+class CancelSubscriptionRequest(BaseModel):
+    reason: str = ""
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Startup
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -148,24 +159,50 @@ async def get_recent_activity(
 @router.get("/users")
 async def list_users(
     search: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     admin: User = Depends(require_super_admin)
 ):
-    query = db.query(User)
+    query = db.query(User).filter(User.deleted_at.is_(None))
     if search:
         query = query.filter(
             (User.email.ilike(f"%{search}%")) |
-            (User.username.ilike(f"%{search}%"))
+            (User.username.ilike(f"%{search}%")) |
+            (User.full_name.ilike(f"%{search}%"))
         )
-    
+
     total = query.count()
     users = query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
-    
+
+    # Per-user scan counts
+    user_ids = [u.id for u in users]
+    scan_counts = {}
+    if user_ids:
+        rows = db.query(Scan.user_id, func.count(Scan.id)).filter(
+            Scan.user_id.in_(user_ids)
+        ).group_by(Scan.user_id).all()
+        scan_counts = {uid: cnt for uid, cnt in rows}
+
+    # Tier distribution (across all non-deleted users)
+    tier_rows = db.query(User.subscription_tier, func.count(User.id)).filter(
+        User.deleted_at.is_(None)
+    ).group_by(User.subscription_tier).all()
+    tier_distribution = {}
+    for tier, count in tier_rows:
+        tier_key = tier.value if tier else "free"
+        tier_distribution[tier_key] = count
+
+    user_list = []
+    for u in users:
+        d = u.to_dict()
+        d["total_scans"] = scan_counts.get(u.id, 0)
+        user_list.append(d)
+
     return {
         "total": total,
-        "users": [u.to_dict() for u in users],
+        "users": user_list,
+        "tier_distribution": tier_distribution,
     }
 
 @router.get("/users/{user_id}")
@@ -177,14 +214,26 @@ async def get_user_admin(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    scans_count = db.query(func.count(Scan.id)).filter(Scan.user_id == user_id).scalar()
-    
+
+    scans_count = db.query(func.count(Scan.id)).filter(Scan.user_id == user_id).scalar() or 0
+    findings_count = db.query(func.count(Finding.id)).join(Scan, Finding.scan_id == Scan.scan_id).filter(
+        Scan.user_id == user_id
+    ).scalar() or 0
+
+    recent_scans = db.query(Scan).filter(Scan.user_id == user_id).order_by(
+        Scan.created_at.desc()
+    ).limit(5).all()
+
+    d = user.to_dict()
+    d["total_scans"] = scans_count
+
     return {
-        "user": user.to_dict(),
+        "user": d,
         "stats": {
             "scans_count": scans_count,
-        }
+            "findings_count": findings_count,
+        },
+        "recent_scans": [s.to_dict() for s in recent_scans],
     }
 
 @router.patch("/users/{user_id}")
@@ -204,9 +253,111 @@ async def update_user_admin(
     data = request.dict(exclude_unset=True)
     for key, value in data.items():
         setattr(user, key, value)
-    
+
+    # Sync scan limit when tier changes
+    if "subscription_tier" in data:
+        config = TIER_CONFIG.get(user.subscription_tier, TIER_CONFIG[SubscriptionTier.FREE])
+        user.monthly_scan_limit = config["monthly_scan_limit"]
+
     db.commit()
-    return user.to_dict()
+    d = user.to_dict()
+    d["total_scans"] = db.query(func.count(Scan.id)).filter(Scan.user_id == user_id).scalar() or 0
+    return d
+
+
+@router.delete("/users/{user_id}")
+async def delete_user_admin(
+    user_id: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin)
+):
+    """Soft-delete a user (sets deleted_at, deactivates account)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_super_admin and user.email == SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Cannot delete primary super admin")
+
+    user.deleted_at = datetime.now(timezone.utc)
+    user.is_active = False
+    user.subscription_status = SubscriptionStatus.CANCELLED
+    db.commit()
+    return {"status": "deleted", "user_id": user_id}
+
+
+@router.post("/users/{user_id}/cancel-subscription")
+async def cancel_user_subscription(
+    user_id: str,
+    request: CancelSubscriptionRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin)
+):
+    """Cancel a user's subscription — revert to free tier."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_super_admin and user.email == SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Cannot modify primary super admin")
+
+    user.subscription_tier = SubscriptionTier.FREE
+    user.subscription_status = SubscriptionStatus.CANCELLED
+    user.monthly_scan_limit = TIER_CONFIG[SubscriptionTier.FREE]["monthly_scan_limit"]
+    db.commit()
+
+    d = user.to_dict()
+    d["total_scans"] = db.query(func.count(Scan.id)).filter(Scan.user_id == user_id).scalar() or 0
+    return {"status": "cancelled", "user": d}
+
+
+@router.post("/users/{user_id}/extend-subscription")
+async def extend_user_subscription(
+    user_id: str,
+    request: SubscriptionExtendRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin)
+):
+    """Extend a user's subscription by N days — reactivate if cancelled/expired."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_super_admin and user.email == SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Cannot modify primary super admin")
+
+    user.subscription_status = SubscriptionStatus.ACTIVE
+    # Reset updated_at to track extension time
+    user.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    d = user.to_dict()
+    d["total_scans"] = db.query(func.count(Scan.id)).filter(Scan.user_id == user_id).scalar() or 0
+    return {"status": "extended", "days": request.days, "user": d}
+
+
+@router.post("/users/{user_id}/change-tier")
+async def change_user_tier(
+    user_id: str,
+    request: ChangeTierRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin)
+):
+    """Change a user's subscription tier and sync limits."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_super_admin and user.email == SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Cannot modify primary super admin")
+
+    config = TIER_CONFIG.get(request.tier, TIER_CONFIG[SubscriptionTier.FREE])
+    user.subscription_tier = request.tier
+    user.subscription_status = SubscriptionStatus.ACTIVE
+    user.monthly_scan_limit = config["monthly_scan_limit"]
+    user.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    d = user.to_dict()
+    d["total_scans"] = db.query(func.count(Scan.id)).filter(Scan.user_id == user_id).scalar() or 0
+    return {"status": "tier_changed", "new_tier": request.tier.value, "user": d}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Security & Monitoring

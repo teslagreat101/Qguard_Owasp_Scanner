@@ -1,5 +1,5 @@
 """
-Quantum Protocol v3 — Pattern Rules Engine
+Quantara Security v5.0 — Pattern Rules Engine
 
 Contains 200+ regex patterns covering:
   - 15+ programming languages
@@ -7,7 +7,7 @@ Contains 200+ regex patterns covering:
   - Hardcoded keys with entropy analysis triggers
   - Weak RNG detection
   - Protocol-level patterns (TLS, SSH, IPsec configs)
-  - PQC adoption detection (positive signals)
+  - Advanced adoption detection (positive signals)
 
 Each pattern includes:
   - Regex (compiled with flags)
@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from quantum_protocol.models.enums import AlgoFamily
+from .enums import AlgoFamily
 
 
 @dataclass(frozen=True)
@@ -62,7 +62,7 @@ def _build_rules() -> list[PatternRule]:
         ))
 
     # ╔══════════════════════════════════════════════════════════════════════╗
-    # ║  RSA — Quantum-broken (Shor's algorithm)                          ║
+    # ║  RSA — Quantara-vulnerable (Shor's algorithm)                         ║
     # ╚══════════════════════════════════════════════════════════════════════╝
 
     # Python
@@ -75,7 +75,7 @@ def _build_rules() -> list[PatternRule]:
     _add(AlgoFamily.RSA, r"Cipher\.pkcs1_v1_5|PKCS1_v1_5", 0.90, hndl=True, lang="python",
          note="RSA PKCS1v1.5 (deprecated padding)", cwe="CWE-327")
     _add(AlgoFamily.RSA_OAEP, r"padding\.OAEP\b", 0.85, hndl=True, lang="python",
-         note="RSA-OAEP — better padding but RSA is still quantum-broken", cwe="CWE-327")
+         note="RSA-OAEP — better padding but RSA is still Quantara-vulnerable", cwe="CWE-327")
     _add(AlgoFamily.RSA, r"asymmetric[._]padding\.PKCS1v15", 0.90, hndl=True, lang="python",
          note="RSA PKCS1v15 padding (cryptography lib)", cwe="CWE-327")
 
@@ -156,7 +156,7 @@ def _build_rules() -> list[PatternRule]:
          note="RSA SSH public key", cwe="CWE-327")
 
     # ╔══════════════════════════════════════════════════════════════════════╗
-    # ║  ECC / ECDSA / ECDH — Quantum-broken (Shor's algorithm)          ║
+    # ║  ECC / ECDSA / ECDH — Quantara-vulnerable (Shor's algorithm)         ║
     # ╚══════════════════════════════════════════════════════════════════════╝
 
     _add(AlgoFamily.ECC, r"ec\.generate_private_key\s*\(", 0.95, hndl=True, lang="python",
@@ -164,7 +164,7 @@ def _build_rules() -> list[PatternRule]:
     _add(AlgoFamily.ECDSA, r"ECDSA\b", 0.90, hndl=True,
          note="ECDSA reference", cwe="CWE-327")
     _add(AlgoFamily.ECC, r"SECP256R1|SECP384R1|SECP521R1|secp256k1", 0.90, hndl=True,
-         note="Named EC curve (quantum-vulnerable)", cwe="CWE-327")
+         note="Named EC curve (Quantara-vulnerable)", cwe="CWE-327")
     _add(AlgoFamily.ECC, r"P-256|P-384|P-521|prime256v1|prime384v1", 0.90, hndl=True,
          note="EC curve name", cwe="CWE-327")
     _add(AlgoFamily.ECDH, r"elliptic\.createECDH|createECDH\b", 0.95, hndl=True,
@@ -200,16 +200,16 @@ def _build_rules() -> list[PatternRule]:
 
     # Ed25519 / Ed448 / X25519 / X448
     _add(AlgoFamily.ED25519, r"Ed25519|ed25519|ED25519", 0.85, hndl=True,
-         note="Ed25519 — modern but quantum-vulnerable", cwe="CWE-327")
+         note="Ed25519 — modern but Quantara-vulnerable", cwe="CWE-327")
     _add(AlgoFamily.ED448, r"Ed448|ed448", 0.85, hndl=True,
-         note="Ed448 — quantum-vulnerable", cwe="CWE-327")
+         note="Ed448 — Quantara-vulnerable", cwe="CWE-327")
     _add(AlgoFamily.X25519, r"X25519|x25519|Curve25519", 0.85, hndl=True,
-         note="X25519 key exchange — quantum-vulnerable", cwe="CWE-327")
+         note="X25519 key exchange — Quantara-vulnerable", cwe="CWE-327")
     _add(AlgoFamily.X448, r"X448|x448", 0.85, hndl=True,
-         note="X448 key exchange — quantum-vulnerable", cwe="CWE-327")
+         note="X448 key exchange — Quantara-vulnerable", cwe="CWE-327")
 
     # ╔══════════════════════════════════════════════════════════════════════╗
-    # ║  DSA — Deprecated + Quantum-broken                                ║
+    # ║  DSA — Deprecated + Quantara-vulnerable                            ║
     # ╚══════════════════════════════════════════════════════════════════════╝
 
     _add(AlgoFamily.DSA, r"dsa\.generate_private_key\s*\(", 0.95, key_size=True, hndl=True,
@@ -224,7 +224,7 @@ def _build_rules() -> list[PatternRule]:
          note="DSA SSH key (deprecated)", cwe="CWE-327")
 
     # ╔══════════════════════════════════════════════════════════════════════╗
-    # ║  DH / ECDH — Quantum-broken                                       ║
+    # ║  DH / ECDH — Quantara-vulnerable                                   ║
     # ╚══════════════════════════════════════════════════════════════════════╝
 
     _add(AlgoFamily.DH, r"dh\.generate_parameters\s*\(", 0.95, key_size=True, hndl=True,
@@ -332,7 +332,7 @@ def _build_rules() -> list[PatternRule]:
 
     # Grover-weakened AES-128
     _add(AlgoFamily.AES_128, r"AES-?128\b|aes_128\b", 0.70,
-         note="AES-128 provides only 64-bit quantum security (Grover). Prefer AES-256.", cwe="CWE-327")
+         note="AES-128 provides only 64-bit security against advanced attacks. Prefer AES-256.", cwe="CWE-327")
 
     # ╔══════════════════════════════════════════════════════════════════════╗
     # ║  Hardcoded Keys & Secrets                                          ║
@@ -412,21 +412,21 @@ def _build_rules() -> list[PatternRule]:
          note="Cryptographic algorithm negotiation/factory (good agility)", tags=("agility",))
 
     # ╔══════════════════════════════════════════════════════════════════════╗
-    # ║  PQC Adoption (POSITIVE detection)                                 ║
+    # ║  Advanced Crypto Adoption (POSITIVE detection)                     ║
     # ╚══════════════════════════════════════════════════════════════════════╝
 
     _add(AlgoFamily.ML_KEM, r"ML-?KEM|mlkem|kyber|CRYSTALS-?Kyber", 0.90,
-         note="ML-KEM / Kyber detected — post-quantum KEM (FIPS 203)", tags=("pqc",))
+         note="ML-KEM / Kyber detected — advanced KEM (FIPS 203)", tags=("pqc",))
     _add(AlgoFamily.ML_DSA, r"ML-?DSA|mldsa|dilithium|CRYSTALS-?Dilithium", 0.90,
-         note="ML-DSA / Dilithium detected — post-quantum signatures (FIPS 204)", tags=("pqc",))
+         note="ML-DSA / Dilithium detected — advanced signatures (FIPS 204)", tags=("pqc",))
     _add(AlgoFamily.SLH_DSA, r"SLH-?DSA|slhdsa|SPHINCS\+?", 0.90,
-         note="SLH-DSA / SPHINCS+ detected — hash-based PQ signatures (FIPS 205)", tags=("pqc",))
+         note="SLH-DSA / SPHINCS+ detected — hash-based signatures (FIPS 205)", tags=("pqc",))
     _add(AlgoFamily.XMSS, r"XMSS|xmss", 0.80,
          note="XMSS hash-based signatures detected", tags=("pqc",))
-    _add(AlgoFamily.ML_KEM, r"liboqs|oqs-provider|pqcrypto|open-quantum-safe", 0.75,
-         note="PQC library reference detected (liboqs/OQS)", tags=("pqc",))
+    _add(AlgoFamily.ML_KEM, r"liboqs|oqs-provider|pqcrypto|open-security-safe", 0.75,
+         note="Advanced crypto library reference detected (liboqs/OQS)", tags=("pqc",))
     _add(AlgoFamily.ML_KEM, r"X25519Kyber768|X25519MLKEM768", 0.95,
-         note="Hybrid PQC key exchange — X25519+ML-KEM-768", tags=("pqc", "hybrid"))
+         note="Hybrid advanced key exchange — X25519+ML-KEM-768", tags=("pqc", "hybrid"))
 
     return rules
 
@@ -443,6 +443,80 @@ COMPILED_RULES: list[tuple[re.Pattern, PatternRule]] = [
 RULES_BY_FAMILY: dict[AlgoFamily, list[PatternRule]] = {}
 for _r in ALL_RULES:
     RULES_BY_FAMILY.setdefault(_r.family, []).append(_r)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Quantara Migration Guidance
+# ────────────────────────────────────────────────────────────────────────────
+
+QUANTARA_REPLACEMENTS: dict[AlgoFamily, dict[str, str]] = {
+    AlgoFamily.RSA: {
+        "action": "Migrate to ML-KEM (Kyber) for key encapsulation.",
+        "pqc": "ML-KEM-768",
+        "notes": "RSA is vulnerable to Shor's algorithm. Use advanced crypto for long-term data security.",
+        "agility": "High"
+    },
+    AlgoFamily.RSA_OAEP: {
+        "action": "Migrate to ML-KEM-768 or ML-KEM-1024.",
+        "pqc": "ML-KEM",
+        "notes": "Use FIPS 203 standardized KEMs.",
+        "agility": "High"
+    },
+    AlgoFamily.ECC: {
+        "action": "Migrate to ML-KEM or hybrid X25519+ML-KEM.",
+        "pqc": "ML-KEM",
+        "notes": "Elliptic Curve cryptography is broken by large-scale Quantara devices.",
+        "agility": "Medium"
+    },
+    AlgoFamily.ECDH: {
+        "action": "Use ML-KEM or X25519-MLKEM768 hybrid.",
+        "pqc": "ML-KEM",
+        "notes": "Transition key exchange to advanced secure primitives.",
+        "agility": "High"
+    },
+    AlgoFamily.ECDSA: {
+        "action": "Migrate to ML-DSA (Dilithium) or SLH-DSA (SPHINCS+).",
+        "pqc": "ML-DSA",
+        "notes": "Signatures should be migrated to FIPS 204/205 standards.",
+        "agility": "Medium"
+    },
+    AlgoFamily.DIFFIE_HELLMAN: {
+        "action": "Migrate to ML-KEM.",
+        "pqc": "ML-KEM",
+        "notes": "Traditional DH is vulnerable to Quantara computing attacks.",
+        "agility": "Low"
+    },
+    AlgoFamily.DSA: {
+        "action": "Decommission DSA. Use ML-DSA.",
+        "pqc": "ML-DSA",
+        "notes": "DSA is both classically weak and Quantara-vulnerable.",
+        "agility": "Very Low"
+    },
+    AlgoFamily.MD5: {
+        "action": "Migrate to SHA-256 or SHA-3.",
+        "pqc": "SHA-3 / ML-DSA (if signing)",
+        "notes": "MD5 is collision-broken. Use collision-resistant hash functions.",
+        "agility": "Low"
+    },
+    AlgoFamily.SHA1: {
+        "action": "Migrate to SHA-256, SHA-384, or SHA-512.",
+        "pqc": "SHA-3",
+        "notes": "SHA-1 is deprecated and should be replaced with SHA-2 or SHA-3.",
+        "agility": "Medium"
+    },
+    AlgoFamily.AES: {
+        "action": "Increase key size to 256-bit (AES-256) to maintain security margin.",
+        "pqc": "AES-256",
+        "notes": "Grover's algorithm reduces effective security of symmetric keys by half.",
+        "agility": "High"
+    },
+    AlgoFamily.DES: {
+        "action": "Migrate to AES-256 or AES-GCM.",
+        "pqc": "AES-256",
+        "notes": "DES/3DES are obsolete and insecure.",
+        "agility": "Very Low"
+    },
+}
 
 
 # ────────────────────────────────────────────────────────────────────────────

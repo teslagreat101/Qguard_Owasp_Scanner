@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/main.py'', doraise=True\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''Centralize_Scanners/scanner_engine/orchestrator.py'', doraise=True\\); print\\(''orchestrator.py: OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/main.py'', doraise=True\\); print\\(''main.py: OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''Centralize_Scanners/scanner_engine/neo_intelligence/neo_scan_loop.py'', doraise=True\\); print\\(''neo_scan_loop.py: OK''\\)\")",
+      "Bash(npx next build)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/main.py'', doraise=True\\); py_compile.compile\\(''backend/database.py'', doraise=True\\); print\\(''OK''\\)\")",
+      "Bash(npx tsc --noEmit --pretty)",
+      "Bash(python -c \"from backend.database import SecurityEvent; print\\(''SecurityEvent import OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/api/v1/health)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/main.py'', doraise=True\\); print\\(''OK''\\)\")",
+      "Bash(python -c \"from backend.ai_attack_engine import AttackSurfaceAnalyzer, PayloadGenerator, AdaptiveFuzzer, ResponseIntelligenceEngine, VulnConfirmationEngine, AttackMemoryStore, AttackGraphBuilder, ai_analyze_request; print\\(''All imports OK''\\)\")",
+      "Bash(npm run build)",
+      "Bash(.venv/Scripts/python -c \"import aiohttp; print\\(''aiohttp ok''\\)\")",
+      "Bash(.venv/Scripts/python -c \"import httpx; print\\(''httpx ok''\\)\")",
+      "Bash(.venv/Scripts/python -c \"import ast; ast.parse\\(open\\(''backend/intelligence_nodes.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \":*)"
+    ]
+  }
+}
