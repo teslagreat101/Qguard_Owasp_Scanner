@@ -24,6 +24,7 @@ redis>=5.0.0
 # FastAPI - required for backend API server
 fastapi>=0.100.0
 uvicorn>=0.23.0
+firebase-admin>=6.0.0
 
 # Stripe - required for billing integration
 stripe>=7.0.0
